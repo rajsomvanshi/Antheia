@@ -39,8 +39,8 @@ class ApiConfig {
   // ── Supabase ──
   // URL must be https://xxx.supabase.co  (NOT .../rest/v1/)
   // Key must be the anon/service JWT (eyJ...) or publishable key (sb_publishable_...)
-  static String supabaseUrl      = const String.fromEnvironment('SUPABASE_URL',        defaultValue: 'https://rlrhwwltbalerqiwupnf.supabase.co');
-  static String supabaseAnonKey  = const String.fromEnvironment('SUPABASE_ANON_KEY',   defaultValue: 'sb_publishable_7OX67S5bgNiw5fyk9FCR9w_m9UunpIT');
+  static String supabaseUrl      = const String.fromEnvironment('SUPABASE_URL',        defaultValue: '');
+  static String supabaseAnonKey  = const String.fromEnvironment('SUPABASE_ANON_KEY',   defaultValue: '');
 
   // ── Reserved (not yet wired) ──
   static String unsplashKey      = const String.fromEnvironment('UNSPLASH_KEY',        defaultValue: '');

@@ -50,3 +50,19 @@ assets/.env
 # Model subagent files
 .agents/
 
+# Firebase config (contains API keys)
+android/app/google-services.json
+lib/firebase_options.dart
+firebase.json
+
+# Supabase CLI temp files
+supabase/.temp/
+
+# Build reports
+android/build/
+
+# Internal architecture docs
+ANTHEIA_PERMANENT_ARCHITECTURE.md
+architecture_context.md
+skills-lock.json
+
