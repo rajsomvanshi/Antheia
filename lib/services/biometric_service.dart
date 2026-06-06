@@ -45,11 +45,24 @@ class BiometricService {
         biometrics.contains(BiometricType.strong);
   }
 
+  Future<bool> isDeviceSupported() async {
+    if (kIsWeb) return false;
+    try {
+      return await _auth.isDeviceSupported();
+    } on PlatformException catch (e) {
+      debugPrint('Device support check failed: $e');
+      return false;
+    }
+  }
+
   // ── Authenticate ──────────────────────────────────────────────
   Future<BiometricResult> authenticate({
-    String reason = 'Authenticate to unlock FlowJournal',
+    String reason = 'Authenticate to unlock Antheia',
   }) async {
-    if (!await isAvailable()) {
+    final available = await isAvailable();
+    final supported = await isDeviceSupported();
+    
+    if (!available && !supported) {
       return BiometricResult.unavailable;
     }
 
@@ -65,6 +78,20 @@ class BiometricService {
     } on PlatformException catch (e) {
       debugPrint('Biometric auth error: $e');
       if (e.code == 'NotAvailable' || e.code == 'NotEnrolled') {
+        // If device supports PIN/passcode fallback, let local_auth handle it.
+        // But if not, return unavailable.
+        if (supported) {
+          try {
+            final success = await _auth.authenticate(
+              localizedReason: reason,
+              options: const AuthenticationOptions(
+                stickyAuth: true,
+                biometricOnly: false,
+              ),
+            );
+            return success ? BiometricResult.success : BiometricResult.failed;
+          } catch (_) {}
+        }
         return BiometricResult.unavailable;
       }
       return BiometricResult.failed;

@@ -1,465 +1,412 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
-import '../../state/app_state.dart';
+import '../../theme/interaction_system.dart';
+import '../../state/memory_state.dart';
 import '../../models/models.dart';
+import '../memory_detail_screen.dart';
+import '../editor_surface.dart';
 
 // ═══════════════════════════════════════════════════════════════
-// CalendarTab — Monthly calendar view
+// Calendar Tab — Life Archive
 //
-// FIXED:
-//  • Every date now has a circular bubble (outlined ring).
-//  • Journaled dates: bubble is filled and shows the first photo
-//    thumbnail (clipped to circle). If no photo, shows the mood
-//    emoji inside the bubble instead.
-//  • Today: accent-coloured ring.
-//  • Selected date: filled accent circle (same as before).
+// Scrubbed of habit streaks and GitHub contribution blocks.
+// Time is represented as a quiet print canvas of emotional states
+// indicated by a single, delicate gold dot below active days.
 // ═══════════════════════════════════════════════════════════════
+
+import '../../services/paywall_service.dart';
+import '../paywall_sheet.dart';
 
 class CalendarTab extends StatefulWidget {
   const CalendarTab({super.key});
-
   @override
   State<CalendarTab> createState() => _CalendarTabState();
 }
 
 class _CalendarTabState extends State<CalendarTab> {
-  late DateTime _focusedMonth;
+  late DateTime _focusMonth;
   DateTime? _selectedDay;
 
   @override
   void initState() {
     super.initState();
-    _focusedMonth = DateTime(DateTime.now().year, DateTime.now().month);
+    _focusMonth = DateTime(DateTime.now().year, DateTime.now().month);
   }
-
-  void _prevMonth() => setState(() {
-        _focusedMonth =
-            DateTime(_focusedMonth.year, _focusedMonth.month - 1);
-      });
-
-  void _nextMonth() => setState(() {
-        _focusedMonth =
-            DateTime(_focusedMonth.year, _focusedMonth.month + 1);
-      });
 
   @override
   Widget build(BuildContext context) {
-    final allEntries = context.watch<AppState>().entries;
+    final entries = context.watch<MemoryState>().entries;
+    final colors = AppColors.of(context);
 
-    // Build a map: date → first JournalEntry on that date
-    final Map<DateTime, JournalEntry> entryByDay = {};
-    for (final e in allEntries) {
-      final key = DateTime(e.createdAt.year, e.createdAt.month, e.createdAt.day);
-      entryByDay.putIfAbsent(key, () => e);
-    }
-
-    return Column(
-      children: [
-        // ── Month navigation ──────────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.chevron_left_rounded),
-                color: AppColors.textPrimary,
-                onPressed: _prevMonth,
-              ),
-              Text(
-                _monthLabel(_focusedMonth),
-                style: GoogleFonts.inter(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.chevron_right_rounded),
-                color: AppColors.textPrimary,
-                onPressed: _nextMonth,
-              ),
-            ],
-          ),
-        ),
-
-        // ── Weekday headers ───────────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: const ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']
-                .map((d) => SizedBox(
-                      width: 44,
-                      child: Text(
-                        d,
-                        textAlign: TextAlign.center,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                    ))
-                .toList(),
-          ),
-        ),
-
-        // ── Calendar grid ─────────────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: _buildGrid(entryByDay),
-        ),
-
-        const Divider(height: 32),
-
-        // ── Selected day entries ──────────────────────────────────
-        Expanded(
-          child: _selectedDay == null
-              ? Center(
-                  child: Text(
-                    'Tap a day to see entries',
-                    style: GoogleFonts.inter(
-                      fontSize: 14,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                )
-              : _buildDayEntries(allEntries, _selectedDay!),
-        ),
-      ],
-    );
-  }
-
-  // ─── Calendar Grid ────────────────────────────────────────────
-  Widget _buildGrid(Map<DateTime, JournalEntry> entryByDay) {
-    final firstDay = DateTime(_focusedMonth.year, _focusedMonth.month, 1);
-    final daysInMonth =
-        DateTime(_focusedMonth.year, _focusedMonth.month + 1, 0).day;
-    final startWeekday = firstDay.weekday % 7; // 0 = Sunday
-
-    final cells = <Widget>[];
-
-    // Empty cells before the first day
-    for (int i = 0; i < startWeekday; i++) {
-      cells.add(const SizedBox(width: 44, height: 52));
-    }
-
-    for (int day = 1; day <= daysInMonth; day++) {
-      final date =
-          DateTime(_focusedMonth.year, _focusedMonth.month, day);
-      final entry = entryByDay[date]; // null = no journal on this date
-      final hasEntry = entry != null;
-      final isSelected = _selectedDay == date;
-      final now = DateTime.now();
-      final isToday = date.year == now.year &&
-          date.month == now.month &&
-          date.day == now.day;
-
-      cells.add(
-        GestureDetector(
-          onTap: () => setState(() => _selectedDay = date),
-          child: _DateBubble(
-            day: day,
-            isSelected: isSelected,
-            isToday: isToday,
-            entry: entry,
-            hasEntry: hasEntry,
-          ),
-        ),
-      );
-    }
-
-    return Wrap(
-      spacing: 2,
-      runSpacing: 6,
-      children: cells,
-    );
-  }
-
-  // ─── Day Entry List ───────────────────────────────────────────
-  Widget _buildDayEntries(List<JournalEntry> allEntries, DateTime day) {
-    final dayEntries = allEntries.where((e) {
-      return e.createdAt.year == day.year &&
-          e.createdAt.month == day.month &&
-          e.createdAt.day == day.day;
-    }).toList();
-
-    if (dayEntries.isEmpty) {
-      return Center(
-        child: Text(
-          'No entries on ${_dayLabel(day)}',
-          style: GoogleFonts.inter(
-            fontSize: 14,
-            color: AppColors.textSecondary,
-          ),
-        ),
-      );
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      itemCount: dayEntries.length,
-      itemBuilder: (context, index) {
-        final e = dayEntries[index];
-        return Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(AppRadius.card),
-            boxShadow: AppShadows.sm,
-          ),
-          child: Row(
-            children: [
-              // Thumbnail or mood bubble
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: _buildEntryThumbnail(e, size: 52),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      e.title,
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatTime(e.createdAt),
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildEntryThumbnail(JournalEntry e, {required double size}) {
-    if (e.photoUrls.isNotEmpty) {
-      final url = e.photoUrls.first;
-      if (url.startsWith('http')) {
-        return Image.network(
-          url,
-          width: size,
-          height: size,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _moodBox(e, size),
-        );
+    // Count entries per day for this month
+    final Map<int, List<JournalEntry>> dayEntriesMap = {};
+    for (final e in entries) {
+      final localDate = e.createdAt.toLocal();
+      if (localDate.year == _focusMonth.year && localDate.month == _focusMonth.month) {
+        dayEntriesMap.putIfAbsent(localDate.day, () => []).add(e);
       }
     }
-    return _moodBox(e, size);
-  }
 
-  Widget _moodBox(JournalEntry e, double size) {
-    return Container(
-      width: size,
-      height: size,
-      color: e.mood.color.withOpacity(0.15),
-      child: Center(
-        child: Text(e.mood.emoji, style: const TextStyle(fontSize: 22)),
-      ),
-    );
-  }
+    final daysInMonth = DateUtils.getDaysInMonth(_focusMonth.year, _focusMonth.month);
+    final firstWeekday = DateTime(_focusMonth.year, _focusMonth.month, 1).weekday % 7;
 
-  String _monthLabel(DateTime dt) {
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December',
-    ];
-    return '${months[dt.month - 1]} ${dt.year}';
-  }
-
-  String _dayLabel(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${months[dt.month - 1]} ${dt.day}';
-  }
-
-  String _formatTime(DateTime dt) {
-    final hour = dt.hour;
-    final minute = dt.minute.toString().padLeft(2, '0');
-    final period = hour >= 12 ? 'PM' : 'AM';
-    final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
-    return '$displayHour:$minute $period';
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// _DateBubble — individual calendar date cell
-// ═══════════════════════════════════════════════════════════════
-
-class _DateBubble extends StatelessWidget {
-  const _DateBubble({
-    required this.day,
-    required this.isSelected,
-    required this.isToday,
-    required this.hasEntry,
-    this.entry,
-  });
-
-  final int day;
-  final bool isSelected;
-  final bool isToday;
-  final bool hasEntry;
-  final JournalEntry? entry;
-
-  @override
-  Widget build(BuildContext context) {
-    // Decide colours
-    final Color borderColor = isSelected
-        ? AppColors.accentPrimary
-        : isToday
-            ? AppColors.accentPrimary
-            : hasEntry
-                ? AppColors.accentPrimary.withOpacity(0.45)
-                : AppColors.textSecondary.withOpacity(0.25);
-
-    final double borderWidth = isSelected || isToday ? 2.0 : 1.2;
-
-    return SizedBox(
-      width: 44,
-      height: 52,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      floatingActionButton: _selectedDay == null
+          ? null
+          : FloatingActionButton(
+              backgroundColor: colors.accent,
+              mini: true,
+              onPressed: () async {
+                final paywall = context.read<PaywallService>();
+                final gate = paywall.checkGate(ProFeature.unlimitedEntries);
+                if (gate != null) {
+                  final unlocked = await PaywallSheet.show(context, gate);
+                  if (!unlocked) return;
+                }
+                if (context.mounted) {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => EditorSurface(
+                        initialEntry: JournalEntry(
+                          id: DateTime.now().millisecondsSinceEpoch.toString(),
+                          title: '',
+                          content: '',
+                          blocks: [TextBlock()],
+                          createdAt: _selectedDay!,
+                          updatedAt: _selectedDay!,
+                          mood: Mood.neutral,
+                        ),
+                      ),
+                    ),
+                  );
+                }
+              },
+              child: const Icon(Icons.add, color: Colors.white),
+            ),
+      body: Stack(
         children: [
-          Stack(
-            alignment: Alignment.center,
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: CinematicGrain(seed: 21, animate: false),
+            ),
+          ),
+          ListView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(28, 16, 28, 120),
             children: [
-              // The bubble
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  // If selected: solid fill
-                  color: isSelected ? AppColors.accentPrimary : Colors.transparent,
-                  border: Border.all(color: borderColor, width: borderWidth),
+              // Month navigation header (Atmospheric editorial feel)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  GestureDetector(
+                    onTap: () {
+                      AppHaptics.subtle();
+                      setState(() {
+                        _focusMonth = DateTime(_focusMonth.year, _focusMonth.month - 1);
+                        _selectedDay = null; // Reset selection on month change
+                      });
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Icon(Icons.chevron_left_rounded, color: colors.textSecondary.withValues(alpha: 0.6), size: 20),
+                    ),
+                  ),
+                  Text(
+                    DateFormat('MMMM yyyy').format(_focusMonth).toUpperCase(),
+                    style: TextStyle(
+                      fontFamily: 'Cormorant Garamond',
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: colors.accent,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      AppHaptics.subtle();
+                      setState(() {
+                        _focusMonth = DateTime(_focusMonth.year, _focusMonth.month + 1);
+                        _selectedDay = null; // Reset selection on month change
+                      });
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: Icon(Icons.chevron_right_rounded, color: colors.textSecondary.withValues(alpha: 0.6), size: 20),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 36),
+  
+              // Weekday headers
+              Row(
+                children: ['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d) => Expanded(
+                  child: Center(
+                    child: Text(
+                      d,
+                      style: TextStyle(
+                        fontFamily: 'Inter',
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: colors.textSecondary.withValues(alpha: 0.5),
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ),
+                )).toList(),
+              ),
+              const SizedBox(height: 16),
+  
+              // Completely borderless, clean print calendar grid
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 7,
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 12,
                 ),
-                child: ClipOval(
-                  child: _bubbleContent(),
-                ),
+                itemCount: firstWeekday + daysInMonth,
+                itemBuilder: (context, index) {
+                  if (index < firstWeekday) {
+                    return const SizedBox();
+                  }
+                  
+                  final day = index - firstWeekday + 1;
+                  final dayEntries = dayEntriesMap[day] ?? [];
+                  final hasMemories = dayEntries.isNotEmpty;
+                  
+                  final nowLocal = DateTime.now();
+                  final isToday = day == nowLocal.day &&
+                      _focusMonth.month == nowLocal.month &&
+                      _focusMonth.year == nowLocal.year;
+  
+                  final isSelected = _selectedDay != null &&
+                      _selectedDay!.day == day &&
+                      _selectedDay!.month == _focusMonth.month &&
+                      _selectedDay!.year == _focusMonth.year;
+  
+                  return GestureDetector(
+                    onTap: () async {
+                      AppHaptics.subtle();
+                      setState(() {
+                        _selectedDay = DateTime(_focusMonth.year, _focusMonth.month, day);
+                      });
+                      if (hasMemories) {
+                        final paywall = context.read<PaywallService>();
+                        final gate = paywall.checkGate(ProFeature.calendarFull);
+                        if (gate != null) {
+                          await PaywallSheet.show(context, gate);
+                        } else {
+                          _showDayEntries(context, day, dayEntries, colors);
+                        }
+                      }
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        // Day Number Text
+                        Container(
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: isToday
+                                ? Border.all(color: colors.accent, width: 1.0)
+                                : (isSelected ? Border.all(color: colors.textSecondary.withValues(alpha: 0.4), width: 1.0) : null),
+                            color: isSelected ? colors.accent.withValues(alpha: 0.15) : null,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '$day',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 13,
+                                fontWeight: isToday ? FontWeight.bold : (hasMemories ? FontWeight.w500 : FontWeight.w300),
+                                color: isToday
+                                    ? colors.accent
+                                    : (hasMemories ? colors.text : colors.textSecondary.withValues(alpha: 0.6)),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        
+                        // Delicate gold dot below the date number
+                        Container(
+                          width: 4,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: hasMemories ? colors.accent : Colors.transparent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
             ],
           ),
-          const SizedBox(height: 3),
-          // Day number below (or inside the bubble if no image)
-          if (hasEntry && entry!.photoUrls.isNotEmpty)
-            Text(
-              '$day',
-              style: GoogleFonts.inter(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: isSelected
-                    ? AppColors.accentPrimary
-                    : AppColors.textSecondary,
-              ),
-            ),
         ],
       ),
     );
   }
 
-  Widget _bubbleContent() {
-    if (isSelected) {
-      // Selected: just show the day number in white
-      return Center(
-        child: Text(
-          '$day',
-          style: GoogleFonts.inter(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: Colors.white,
-          ),
-        ),
-      );
-    }
+  void _showDayEntries(
+    BuildContext context,
+    int day,
+    List<JournalEntry> dayEntries,
+    ResolvedColors colors,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: colors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        side: BorderSide(color: colors.hairline, width: 0.5),
+      ),
+      builder: (_) => _DaySheet(
+        entries: dayEntries,
+        date: DateTime(_focusMonth.year, _focusMonth.month, day),
+        colors: colors,
+      ),
+    );
+  }
+}
 
-    if (hasEntry && entry!.photoUrls.isNotEmpty) {
-      // Journaled + has photo: show thumbnail
-      final url = entry!.photoUrls.first;
-      if (url.startsWith('http')) {
-        return Image.network(
-          url,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _emojiContent(),
-        );
-      }
-      return _emojiContent();
-    }
+class _DaySheet extends StatelessWidget {
+  final List<JournalEntry> entries;
+  final DateTime date;
+  final ResolvedColors colors;
 
-    if (hasEntry) {
-      // Journaled but no photo: show mood emoji on tinted bg
-      return Container(
-        color: entry!.mood.color.withOpacity(0.12),
+  const _DaySheet({
+    required this.entries,
+    required this.date,
+    required this.colors,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(28, 20, 28, 32),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              entry!.mood.emoji,
-              style: const TextStyle(fontSize: 14),
+            // Structural grab handle
+            Center(
+              child: Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: colors.hairline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
             ),
+            const SizedBox(height: 24),
+            
+            // Header
             Text(
-              '$day',
-              style: GoogleFonts.inter(
+              DateFormat('EEEE, MMMM d').format(date).toUpperCase(),
+              style: TextStyle(
+                fontFamily: 'Inter',
                 fontSize: 10,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
+                fontWeight: FontWeight.bold,
+                color: colors.accent,
+                letterSpacing: 1.2,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${entries.length} reflection${entries.length > 1 ? 's' : ''} captured',
+              style: TextStyle(
+                fontFamily: 'Cormorant Garamond',
+                fontSize: 22,
+                fontWeight: FontWeight.w500,
+                color: colors.text,
+              ),
+            ),
+            const SizedBox(height: 20),
+            
+            // Borderless entries rows
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280),
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const BouncingScrollPhysics(),
+                itemCount: entries.length,
+                itemBuilder: (context, index) {
+                  final e = entries[index];
+                  final timeStr = DateFormat('h:mm a').format(e.createdAt);
+                  
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(context);
+                      Navigator.push(
+                        context,
+                        AppTransitions.slideUp(MemoryDetailScreen(entry: e)),
+                      );
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(color: colors.hairline, width: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  e.title.isEmpty ? 'Untitled Memory' : e.title,
+                                  style: TextStyle(
+                                    fontFamily: 'Cormorant Garamond',
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w500,
+                                    color: colors.text,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  timeStr,
+                                  style: TextStyle(
+                                    fontFamily: 'Inter',
+                                    fontSize: 11,
+                                    color: colors.textSecondary.withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            size: 10,
+                            color: colors.textSecondary.withValues(alpha: 0.4),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ],
         ),
-      );
-    }
-
-    // Regular date — just the number
-    return Center(
-      child: Text(
-        '$day',
-        style: GoogleFonts.inter(
-          fontSize: 14,
-          fontWeight: FontWeight.w400,
-          color: AppColors.textPrimary,
-        ),
-      ),
-    );
-  }
-
-  Widget _emojiContent() {
-    return Container(
-      color: entry!.mood.color.withOpacity(0.12),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(entry!.mood.emoji, style: const TextStyle(fontSize: 14)),
-          Text(
-            '$day',
-            style: GoogleFonts.inter(
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              color: AppColors.textPrimary,
-            ),
-          ),
-        ],
       ),
     );
   }

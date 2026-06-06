@@ -1,266 +1,436 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import '../../theme/app_theme.dart';
-import '../../state/app_state.dart';
+
 import '../../models/models.dart';
-import '../editor_screen.dart';
+import '../../state/memory_state.dart';
+import '../../theme/app_theme.dart';
+import '../../theme/interaction_system.dart';
+import '../memory_detail_screen.dart';
+import '../editor_surface.dart';
+import '../voice_reflection_surface.dart';
 
-// ═══════════════════════════════════════════════════════════════
-// TimelineTab — Scrollable list of journal entries
-//
-// Each card shows:
-//   • Photo thumbnail (first photo) OR mood-colour placeholder
-//   • Date  (e.g. "24 May 2026")
-//   • Title (only if one was saved)
-//
-// Empty state: friendly illustration + prompt to write.
-// No hardcoded data — purely driven by AppState.entries.
-// ═══════════════════════════════════════════════════════════════
+import '../../services/paywall_service.dart';
+import '../paywall_sheet.dart';
+import '../../widgets/staggered_reveal.dart';
 
-class TimelineTab extends StatelessWidget {
+class TimelineTab extends StatefulWidget {
   const TimelineTab({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final entries = context.watch<AppState>().entries;
-
-    if (entries.isEmpty) {
-      return _EmptyState();
-    }
-
-    return ListView.builder(
-      physics: const BouncingScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 120),
-      itemCount: entries.length,
-      itemBuilder: (context, index) {
-        return _JournalCard(
-          entry: entries[index],
-          onTap: () {
-            context.read<AppState>().setCurrentEntry(entries[index]);
-            Navigator.of(context).push(
-              PageRouteBuilder(
-                pageBuilder: (c, a, s) => const EditorScreen(),
-                transitionsBuilder: (c, a, s, child) => FadeTransition(
-                  opacity: CurvedAnimation(parent: a, curve: Curves.easeOut),
-                  child: child,
-                ),
-                transitionDuration: const Duration(milliseconds: 300),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
+  State<TimelineTab> createState() => _TimelineTabState();
 }
 
-// ═══════════════════════════════════════════════════════════════
-// _JournalCard
-// ═══════════════════════════════════════════════════════════════
+class _TimelineTabState extends State<TimelineTab> {
+  late ScrollController _scrollController;
+  double _scrollOffset = 0.0;
 
-class _JournalCard extends StatelessWidget {
-  const _JournalCard({required this.entry, required this.onTap});
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _scrollController.addListener(_onScroll);
+  }
 
-  final JournalEntry entry;
-  final VoidCallback onTap;
+  void _onScroll() {
+    if (mounted) {
+      setState(() {
+        _scrollOffset = _scrollController.offset;
+      });
+    }
+  }
 
-  String _formatDate(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.card),
-          border: Border.all(color: AppColors.borderSubtle, width: 1),
-          boxShadow: AppShadows.sm,
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ── Thumbnail ──────────────────────────────────────
-            ClipRRect(
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(AppRadius.card),
-                bottomLeft: Radius.circular(AppRadius.card),
-              ),
-              child: _buildThumbnail(),
+    final memoryState = context.watch<MemoryState>();
+    final entries = memoryState.entries;
+    final colors = AppColors.of(context);
+
+    if (memoryState.isLoading) {
+      return SafeArea(
+        child: Center(
+          child: SizedBox(
+            width: 16, height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: colors.accent,
             ),
+          ),
+        ),
+      );
+    }
 
-            // ── Text content ───────────────────────────────────
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Date
-                    Text(
-                      _formatDate(entry.createdAt),
-                      style: GoogleFonts.inter(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.textSecondary,
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-
-                    // Title (only if non-empty)
-                    if (entry.title.isNotEmpty) ...[
-                      Text(
-                        entry.title,
-                        style: GoogleFonts.inter(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary,
-                          height: 1.3,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-
-                    // Mood chip
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: entry.mood.color.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(AppRadius.chip),
+    return SafeArea(
+      child: entries.isEmpty
+          ? _EmptyTimeline(colors: colors)
+          : CustomScrollView(
+              controller: _scrollController,
+              physics: const BouncingScrollPhysics(),
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 48, 28, 36),
+                    child: Transform.translate(
+                      offset: Offset(0, _scrollOffset * 0.6),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Archive',
+                            style: TextStyle(
+                              fontFamily: 'Cormorant Garamond',
+                              fontSize: 36,
+                              fontWeight: FontWeight.normal,
+                              color: colors.text,
+                              letterSpacing: -0.5,
+                              height: 1.1,
+                            ),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                entry.mood.emoji,
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                entry.mood.label,
-                                style: GoogleFonts.inter(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w500,
-                                  color: entry.mood.color,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        if (entry.isVoiceEntry) ...[
-                          const SizedBox(width: 6),
-                          Icon(
-                            Icons.mic_rounded,
-                            size: 13,
-                            color: AppColors.textSecondary.withOpacity(0.6),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Your life, held over time.',
+                            style: TextStyle(
+                              fontFamily: 'Cormorant Garamond',
+                              fontSize: 15,
+                              fontStyle: FontStyle.italic,
+                              color: colors.textSecondary,
+                              height: 1.4,
+                            ),
                           ),
                         ],
-                      ],
+                      ),
+                    ),
+                  ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(28, 0, 28, 130),
+                  sliver: SliverList.builder(
+                    itemCount: entries.length,
+                    itemBuilder: (context, index) {
+                      final entry = entries[index];
+                      
+                      // Check if we need to show a year divider
+                      final showYearDivider = index == 0 ||
+                          entries[index].createdAt.year != entries[index - 1].createdAt.year;
+
+                      return StaggeredReveal(
+                        index: index,
+                        child: _TimelineEditorialRow(
+                          entry: entry,
+                          colors: colors,
+                          showYearDivider: showYearDivider,
+                          // Asymmetrical alignment: indent every second entry slightly
+                          indent: index % 2 == 1,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
+class _EmptyTimeline extends StatelessWidget {
+  final ResolvedColors colors;
+
+  const _EmptyTimeline({required this.colors});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // Atmospheric dynamic film grain backdrop
+        const Positioned.fill(
+          child: IgnorePointer(
+            child: CinematicGrain(seed: 4, animate: false),
+          ),
+        ),
+        Center(
+          child: SingleChildScrollView(
+            physics: const BouncingScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 42, vertical: 48),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Poetic title in Cormorant
+                Text(
+                  'The pages are quiet.',
+                  style: TextStyle(
+                    fontFamily: 'Cormorant Garamond',
+                    fontSize: 32,
+                    fontWeight: FontWeight.w300,
+                    color: colors.text,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                
+                // Hairline dividing motif
+                Container(
+                  width: 48,
+                  height: 0.5,
+                  color: colors.accent.withValues(alpha: 0.4),
+                ),
+                const SizedBox(height: 28),
+                
+                // Warm, highly-reflective writing prompt
+                Text(
+                  '“Describe the window you are looking through right now. What lies beyond the glass, and what remains inside?”',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: 'Cormorant Garamond',
+                    fontSize: 18,
+                    fontStyle: FontStyle.italic,
+                    color: colors.textSecondary.withValues(alpha: 0.9),
+                    height: 1.6,
+                  ),
+                ),
+                const SizedBox(height: 48),
+                
+                // Editorial action prompts
+                Column(
+                  children: [
+                    GestureDetector(
+                      onTap: () async {
+                        final paywall = context.read<PaywallService>();
+                        final gate = paywall.checkGate(ProFeature.unlimitedEntries);
+                        if (gate != null) {
+                          final unlocked = await PaywallSheet.show(context, gate);
+                          if (!unlocked) return;
+                        }
+                        AppHaptics.light();
+                        if (context.mounted) {
+                          Navigator.push(
+                            context,
+                            AppTransitions.fade(const EditorSurface()),
+                          );
+                        }
+                      },
+                      behavior: HitTestBehavior.opaque,
+                      child: Text(
+                        'Begin writing your first entry',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: colors.text,
+                          decoration: TextDecoration.underline,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Text(
+                      'or',
+                      style: TextStyle(
+                        fontFamily: 'Cormorant Garamond',
+                        fontSize: 14,
+                        fontStyle: FontStyle.italic,
+                        color: colors.textSecondary.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    GestureDetector(
+                      onTap: () async {
+                        final paywall = context.read<PaywallService>();
+                        final gate = paywall.checkGate(ProFeature.unlimitedEntries);
+                        if (gate != null) {
+                          final unlocked = await PaywallSheet.show(context, gate);
+                          if (!unlocked) return;
+                        }
+                        AppHaptics.light();
+                        if (context.mounted) {
+                          Navigator.push(
+                            context,
+                            AppTransitions.fade(const VoiceReflectionSurface(asTab: false)),
+                          );
+                        }
+                      },
+                      behavior: HitTestBehavior.opaque,
+                      child: Text(
+                        'Speak softly to record',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: colors.text,
+                          decoration: TextDecoration.underline,
+                          letterSpacing: 0.2,
+                        ),
+                      ),
                     ),
                   ],
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildThumbnail() {
-    const double w = 90;
-    const double h = 110;
-
-    if (entry.photoUrls.isNotEmpty) {
-      final url = entry.photoUrls.first;
-      if (url.startsWith('http')) {
-        return Image.network(
-          url,
-          width: w,
-          height: h,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _placeholderBox(w, h),
-        );
-      }
-    }
-    return _placeholderBox(w, h);
-  }
-
-  Widget _placeholderBox(double w, double h) {
-    return Container(
-      width: w,
-      height: h,
-      color: entry.mood.color.withOpacity(0.12),
-      child: Center(
-        child: Text(
-          entry.mood.emoji,
-          style: const TextStyle(fontSize: 28),
-        ),
-      ),
+      ],
     );
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// _EmptyState — shown when the user has no journal entries yet
-// ═══════════════════════════════════════════════════════════════
+class _TimelineEditorialRow extends StatelessWidget {
+  final JournalEntry entry;
+  final ResolvedColors colors;
+  final bool showYearDivider;
+  final bool indent;
 
-class _EmptyState extends StatelessWidget {
+  const _TimelineEditorialRow({
+    required this.entry,
+    required this.colors,
+    required this.showYearDivider,
+    required this.indent,
+  });
+
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              width: 100,
-              height: 100,
-              decoration: BoxDecoration(
-                color: AppColors.bgSecondary,
-                borderRadius: BorderRadius.circular(28),
-              ),
-              child: const Center(
-                child: Text('📓', style: TextStyle(fontSize: 46)),
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              'Your journal is empty',
-              style: GoogleFonts.playfairDisplay(
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                color: AppColors.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Tap the + Journal button below to write\nyour first entry — text or voice.',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                color: AppColors.textSecondary,
-                height: 1.6,
+    final dateStr = DateFormat('MMM d').format(entry.createdAt).toUpperCase();
+    final timeStr = DateFormat('h:mm a').format(entry.createdAt);
+    
+    // Impeccable: single editorial metadata string without database-like elements
+    final metadataStr = entry.isVoiceEntry
+        ? '$timeStr · ${entry.durationMinutes > 0 ? '${entry.durationMinutes}m ' : ''}voice narration'
+        : timeStr;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Year Header Stamp (Atmospheric Print Aesthetic)
+        if (showYearDivider) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 36.0, bottom: 16.0),
+            child: Text(
+              '${entry.createdAt.year}',
+              style: TextStyle(
+                fontFamily: 'Cormorant Garamond',
+                fontSize: 48,
+                fontWeight: FontWeight.w200,
+                color: colors.textSecondary.withValues(alpha: 0.12),
+                letterSpacing: 4.0,
               ),
             ),
-          ],
+          ),
+        ],
+
+        // Asymmetrical padding and 95% borderless layout
+        GestureDetector(
+          onTap: () {
+            AppHaptics.subtle();
+            Navigator.push(
+              context,
+              AppTransitions.slideUp(MemoryDetailScreen(entry: entry)),
+            );
+          },
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            margin: EdgeInsets.only(left: indent ? 16.0 : 0.0),
+            padding: const EdgeInsets.symmetric(vertical: 24.0),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: colors.hairline, width: 0.5),
+              ),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Date Stamp Column
+                SizedBox(
+                  width: 60,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        dateStr.split(' ')[1],
+                        style: TextStyle(
+                          fontFamily: 'Cormorant Garamond',
+                          fontSize: 28,
+                          fontWeight: FontWeight.w300,
+                          color: colors.text,
+                          height: 0.9,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        dateStr.split(' ')[0],
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: colors.accent,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                
+                // Memory Content Column
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Title in Cormorant Garamond
+                      Text(
+                        entry.title.isEmpty ? 'Untitled Memory' : entry.title,
+                        style: TextStyle(
+                          fontFamily: 'Cormorant Garamond',
+                          fontSize: 21,
+                          fontWeight: FontWeight.w500,
+                          color: colors.text,
+                          height: 1.2,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+
+                      // Preview text in Userselected body font (14sp)
+                      Text(
+                        entry.content.isEmpty
+                            ? 'Speech transcription...'
+                            : entry.content,
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w300,
+                          color: colors.textSecondary.withValues(alpha: 0.8),
+                          height: 1.55,
+                        ),
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 12),
+
+                      // Metadata indicators (Time, Audio)
+                      Text(
+                        metadataStr,
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 11,
+                          fontWeight: FontWeight.w400,
+                          color: colors.textSecondary.withValues(alpha: 0.6),
+                          letterSpacing: 0.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 }

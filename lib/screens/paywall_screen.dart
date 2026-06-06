@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
 import '../theme/app_theme.dart';
+import '../theme/interaction_system.dart';
 import '../services/revenuecat_service.dart';
-import '../state/app_state.dart';
+import '../state/preferences_state.dart';
+
+// ═══════════════════════════════════════════════════════════════
+// Paywall Screen — Atmospheric Sanctuary Underwriting
+//
+// Clean editorial layouts presenting pricing as a durable
+// support option for continuity, rather than a gamified checkout.
+// ═══════════════════════════════════════════════════════════════
 
 class PaywallScreen extends StatefulWidget {
   const PaywallScreen({super.key});
@@ -14,13 +21,19 @@ class PaywallScreen extends StatefulWidget {
   State<PaywallScreen> createState() => _PaywallScreenState();
 }
 
-class _PaywallScreenState extends State<PaywallScreen> {
+class _PaywallScreenState extends State<PaywallScreen> with SingleTickerProviderStateMixin {
   final _revenueCat = RevenueCatService();
 
   Package? _monthlyPackage;
+  Package? _yearlyPackage;
+  
   bool _isLoadingOfferings = true;
   bool _isPurchasing = false;
   String? _loadError;
+  
+  // Phase 3 post-purchase thank you state
+  bool _showThankYou = false;
+  int _selectedTierIndex = 0; // 0 = Yearly (Recommended), 1 = Monthly
 
   @override
   void initState() {
@@ -37,30 +50,39 @@ class _PaywallScreenState extends State<PaywallScreen> {
     try {
       final offerings = await _revenueCat.fetchOfferings();
       final current = offerings?.current;
+      
       Package? monthly = current?.monthly;
-      monthly ??= current?.availablePackages.isNotEmpty == true
-          ? current!.availablePackages.first
-          : null;
+      Package? yearly = current?.annual;
+      
+      // Fallbacks if current fields are missing
+      if (monthly == null || yearly == null) {
+        final available = current?.availablePackages ?? [];
+        for (final pkg in available) {
+          if (pkg.packageType == PackageType.monthly) monthly = pkg;
+          if (pkg.packageType == PackageType.annual) yearly = pkg;
+        }
+      }
 
       if (!mounted) return;
       setState(() {
         _monthlyPackage = monthly;
+        _yearlyPackage = yearly;
         _isLoadingOfferings = false;
-        if (monthly == null) {
-          _loadError = 'No subscription packages are available right now.';
+        if (monthly == null && yearly == null) {
+          _loadError = 'No subscription tiers are currently available.';
         }
       });
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _isLoadingOfferings = false;
-        _loadError = 'Could not load subscription options.';
+        _loadError = 'Could not retrieve sanctuary offerings.';
       });
     }
   }
 
   Future<void> _handlePurchase() async {
-    final package = _monthlyPackage;
+    final package = _selectedTierIndex == 0 ? _yearlyPackage : _monthlyPackage;
     if (package == null || _isPurchasing) return;
 
     setState(() => _isPurchasing = true);
@@ -70,16 +92,19 @@ class _PaywallScreenState extends State<PaywallScreen> {
       if (!mounted) return;
 
       if (_revenueCat.isPremiumActive(customerInfo)) {
-        context.read<AppState>().setPremium(true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Welcome to FlowJournal Plus!')),
-        );
-        Navigator.pop(context, true);
+        context.read<PreferencesState>().setPremium(true);
+        AppHaptics.success();
+        
+        // Phase 3: Hypnotic post-purchase thank you fade sequence
+        setState(() => _showThankYou = true);
+        await Future.delayed(const Duration(seconds: 5));
+        if (!mounted) return;
+        if (ModalRoute.of(context)?.isCurrent == true) {
+          Navigator.pop(context, true);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Purchase completed, but premium is not active yet.'),
-          ),
+          const SnackBar(content: Text('Payment registered, updating session...')),
         );
       }
     } on PlatformException catch (e) {
@@ -87,12 +112,12 @@ class _PaywallScreenState extends State<PaywallScreen> {
       final errorCode = PurchasesErrorHelper.getErrorCode(e);
       if (errorCode == PurchasesErrorCode.purchaseCancelledError) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Purchase failed: ${errorCode.name}')),
+        SnackBar(content: Text('Verification halted: ${errorCode.name}')),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Purchase failed: $e')),
+        SnackBar(content: Text('Sanctuary binding failed: $e')),
       );
     } finally {
       if (mounted) setState(() => _isPurchasing = false);
@@ -109,240 +134,416 @@ class _PaywallScreenState extends State<PaywallScreen> {
       if (!mounted) return;
 
       if (_revenueCat.isPremiumActive(customerInfo)) {
-        context.read<AppState>().setPremium(true);
+        context.read<PreferencesState>().setPremium(true);
+        AppHaptics.success();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Purchases restored!')),
+          const SnackBar(content: Text('Welcome back. Premium active.')),
         );
         Navigator.pop(context, true);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No active subscription found.')),
+          const SnackBar(content: Text('No active sanctuary underwriter found.')),
         );
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Restore failed: $e')),
+        SnackBar(content: Text('Sanctuary restoration failed: $e')),
       );
     } finally {
       if (mounted) setState(() => _isPurchasing = false);
     }
   }
 
-  String get _priceLabel {
-    final package = _monthlyPackage;
-    if (package == null) return 'Subscribe';
-    return 'Subscribe for ${package.storeProduct.priceString}/mo';
-  }
-
   @override
   Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
     final isBusy = _isLoadingOfferings || _isPurchasing;
 
     return Scaffold(
-      backgroundColor: AppColors.bgPrimary,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Align(
-              alignment: Alignment.topLeft,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: IconButton(
-                  icon: Icon(Icons.close, color: AppColors.textSecondary),
-                  onPressed: isBusy ? null : () => Navigator.pop(context),
+      backgroundColor: _showThankYou ? const Color(0xFF100F0E) : colors.bg,
+      body: AnimatedCrossFade(
+        duration: const Duration(milliseconds: 1000),
+        crossFadeState: _showThankYou ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+        firstCurve: Curves.easeInOut,
+        secondCurve: Curves.easeInOut,
+        
+        // ─── First child: The Paywall Content ───
+        firstChild: Container(
+          width: double.infinity,
+          height: MediaQuery.of(context).size.height,
+          child: Stack(
+            children: [
+              const Positioned.fill(
+                child: IgnorePointer(
+                  child: CinematicGrain(seed: 23, animate: false),
                 ),
               ),
-            ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 32),
+              SafeArea(
                 child: Column(
                   children: [
-                    const SizedBox(height: 20),
+                    // Header Quiet Exit
+                    Align(
+                      alignment: Alignment.topRight,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 20, top: 12),
+                        child: IconButton(
+                          icon: Icon(Icons.close_rounded, color: colors.textSecondary.withValues(alpha: 0.6), size: 20),
+                          onPressed: isBusy ? null : () => Navigator.pop(context),
+                        ),
+                      ),
+                    ),
+                    
+                    Expanded(
+                      child: SingleChildScrollView(
+                        physics: const BouncingScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(horizontal: 32),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            
+                            // Poetic Display Title
+                            Text(
+                              'PRESERVE YOUR STORY',
+                              style: TextStyle(
+                                fontFamily: 'Cormorant Garamond',
+                                fontSize: 26,
+                                fontWeight: FontWeight.normal,
+                                color: colors.text,
+                                letterSpacing: 1.5,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            
+                            // Poetic Subtitle
+                            Text(
+                              'Antheia Premium connects your thoughts and underwrites the absolute security of your memory library.',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 14,
+                                color: colors.textSecondary,
+                                height: 1.5,
+                              ),
+                            ),
+                            const SizedBox(height: 40),
+                            
+                            // Premium Gated features
+                            _buildBenefitRow(
+                              colors: colors,
+                              title: 'Semantic Search',
+                              desc: 'Search your thoughts by concept, meaning, and emotional connection rather than simple keywords.',
+                            ),
+                            _buildBenefitRow(
+                              colors: colors,
+                              title: 'Sanctuary Library & AI Connections',
+                              desc: 'Dynamically clusters recurring themes and patterns (e.g. solitude, growth, family) curated silently by the system.',
+                            ),
+                            _buildBenefitRow(
+                              colors: colors,
+                              title: 'Memory Geography Maps',
+                              desc: 'Display coordinates not as tech logs but as the physical chapters of the travels defining your life.',
+                            ),
+                            _buildBenefitRow(
+                              colors: colors,
+                              title: 'Durable Sync & Cloud Backup',
+                              desc: 'Continuous cloud sync replication under SQLite outbox WAL-security guarantees no reflection is ever lost.',
+                            ),
+                            
+                            const SizedBox(height: 36),
+                          ],
+                        ),
+                      ),
+                    ),
+                    
+                    // Purchase Actions Section
                     Container(
-                      padding: const EdgeInsets.all(24),
+                      padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
                       decoration: BoxDecoration(
-                        color: AppColors.accentPrimary.withValues(alpha: 0.1),
-                        shape: BoxShape.circle,
+                        color: colors.bg,
+                        border: Border(
+                          top: BorderSide(color: colors.hairline, width: 0.5),
+                        ),
                       ),
-                      child: const Text('✨', style: TextStyle(fontSize: 48)),
-                    ),
-                    const SizedBox(height: 32),
-                    Text(
-                      'Unlock FlowJournal Plus',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.playfairDisplay(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_loadError != null) ...[
+                            Text(
+                              _loadError!,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 12,
+                                color: colors.textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          
+                          // Annual Tier Selection Button
+                          _buildTierButton(
+                            colors: colors,
+                            index: 0,
+                            title: 'Annual Plan',
+                            price: _yearlyPackage?.storeProduct.priceString ?? '\$29.99',
+                            period: 'year',
+                            subtitle: '(Recommended) Underwrite your archive\'s continuity.',
+                          ),
+                          const SizedBox(height: 12),
+                          
+                          // Monthly Tier Selection Button
+                          _buildTierButton(
+                            colors: colors,
+                            index: 1,
+                            title: 'Monthly Plan',
+                            price: _monthlyPackage?.storeProduct.priceString ?? '\$4.99',
+                            period: 'month',
+                            subtitle: 'Flexible backup support month-to-month.',
+                          ),
+                          const SizedBox(height: 28),
+                          
+                          // Central Purchase Action
+                          GestureDetector(
+                            onTap: isBusy || (_yearlyPackage == null && _monthlyPackage == null)
+                                ? null
+                                : _handlePurchase,
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              decoration: BoxDecoration(
+                                color: isBusy
+                                    ? colors.accent.withValues(alpha: 0.5)
+                                    : colors.accent,
+                                borderRadius: BorderRadius.circular(30),
+                                border: Border.all(color: colors.hairline, width: 0.5),
+                              ),
+                              child: isBusy
+                                  ? const Center(
+                                      child: SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 1.5,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Secure Sanctuary',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontFamily: 'Inter',
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          
+                          // Restore Link
+                          GestureDetector(
+                            onTap: isBusy ? null : _handleRestore,
+                            child: Text(
+                              'Restore purchases',
+                              style: TextStyle(
+                                fontFamily: 'Inter',
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                                color: colors.textSecondary.withValues(alpha: 0.7),
+                                decoration: TextDecoration.underline,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Get the most out of your journal with premium features.',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        color: AppColors.textSecondary,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 40),
-                    _buildFeatureItem(
-                      icon: '🎨',
-                      title: 'Premium Themes',
-                      description:
-                          'Unlock all mood-based color palettes and typography styles.',
-                    ),
-                    _buildFeatureItem(
-                      icon: '🎙',
-                      title: 'Longer Voice Entries',
-                      description:
-                          'Record up to 60 minutes continuously without interruptions.',
-                    ),
-                    _buildFeatureItem(
-                      icon: '☁️',
-                      title: 'Secure Cloud Backup',
-                      description:
-                          'Never lose a memory with automatic end-to-end encrypted sync.',
-                    ),
-                    _buildFeatureItem(
-                      icon: '📊',
-                      title: 'Deep AI Insights',
-                      description:
-                          'Get profound analysis on your emotional patterns and habits.',
-                    ),
-                    const SizedBox(height: 48),
                   ],
                 ),
               ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.black12,
-                    blurRadius: 10,
-                    offset: Offset(0, -4),
-                  )
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_loadError != null) ...[
-                    Text(
-                      _loadError!,
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.inter(
-                        fontSize: 13,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
-                  GestureDetector(
-                    onTap: isBusy || _monthlyPackage == null ? null : _handlePurchase,
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      decoration: BoxDecoration(
-                        color: isBusy || _monthlyPackage == null
-                            ? AppColors.accentPrimary.withValues(alpha: 0.5)
-                            : AppColors.accentPrimary,
-                        borderRadius: BorderRadius.circular(AppRadius.button),
-                        boxShadow: AppShadows.glow,
-                      ),
-                      child: _isLoadingOfferings || _isPurchasing
-                          ? const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            )
-                          : Text(
-                              _priceLabel,
-                              textAlign: TextAlign.center,
-                              style: GoogleFonts.inter(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
-                              ),
-                            ),
+            ],
+          ),
+        ),
+        
+        // ─── Second child: Hypnotic Post-Purchase Screen ───
+        secondChild: GestureDetector(
+          onTap: () {
+            AppHaptics.light();
+            Navigator.pop(context, true);
+          },
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            width: double.infinity,
+            height: MediaQuery.of(context).size.height,
+            color: const Color(0xFF100F0E), // Pure dark canvas
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Spacer(flex: 3),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 42),
+                  child: Text(
+                    'Thank you for supporting the preservation of this archive.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Cormorant Garamond',
+                      fontSize: 22,
+                      fontStyle: FontStyle.italic,
+                      color: Color(0xFFD0B08A), // gold accent
+                      height: 1.6,
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      GestureDetector(
-                        onTap: isBusy ? null : _handleRestore,
-                        child: Text(
-                          'Restore Purchases',
-                          style: GoogleFonts.inter(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                            color: AppColors.textSecondary,
-                            decoration: TextDecoration.underline,
-                          ),
-                        ),
-                      ),
-                    ],
+                ),
+                const Spacer(flex: 2),
+                Text(
+                  'Tap anywhere or wait a moment to return.',
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: const Color(0xFFF2F0EB).withValues(alpha: 0.3),
+                    letterSpacing: 0.5,
                   ),
-                ],
-              ),
+                ),
+                const Spacer(flex: 1),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildFeatureItem({
-    required String icon,
+  Widget _buildBenefitRow({
+    required ResolvedColors colors,
     required String title,
-    required String description,
+    required String desc,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 24),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(icon, style: const TextStyle(fontSize: 24)),
-          const SizedBox(width: 16),
+          Padding(
+            padding: const EdgeInsets.only(top: 4.0),
+            child: Container(
+              width: 5,
+              height: 5,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: colors.accent,
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   title,
-                  style: GoogleFonts.inter(
-                    fontSize: 16,
+                  style: TextStyle(
+                    fontFamily: 'Cormorant Garamond',
+                    fontSize: 18,
                     fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
+                    color: colors.text,
+                    height: 1.2,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 6),
                 Text(
-                  description,
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    color: AppColors.textSecondary,
-                    height: 1.4,
+                  desc,
+                  style: TextStyle(
+                    fontFamily: 'Inter',
+                    fontSize: 13,
+                    color: colors.textSecondary.withValues(alpha: 0.8),
+                    height: 1.5,
                   ),
                 ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildTierButton({
+    required ResolvedColors colors,
+    required int index,
+    required String title,
+    required String price,
+    required String period,
+    required String subtitle,
+  }) {
+    final active = _selectedTierIndex == index;
+    
+    return GestureDetector(
+      onTap: () {
+        AppHaptics.subtle();
+        setState(() => _selectedTierIndex = index);
+      },
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        decoration: BoxDecoration(
+          color: active
+              ? colors.accent.withValues(alpha: 0.05)
+              : colors.surface.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: active ? colors.accent : colors.hairline,
+            width: active ? 1.2 : 0.5,
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 13,
+                          fontWeight: active ? FontWeight.bold : FontWeight.w500,
+                          color: colors.text,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '$price / $period',
+                        style: TextStyle(
+                          fontFamily: 'Cormorant Garamond',
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                          color: colors.text,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontFamily: 'Cormorant Garamond',
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                      color: colors.textSecondary.withValues(alpha: active ? 0.9 : 0.6),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

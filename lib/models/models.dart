@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
+import 'memory_block.dart';
+export 'memory_block.dart';
 
 // ═══════════════════════════════════════════════════════════════
-// FlowJournal Data Models
+// Antheia — Data Models
 // ═══════════════════════════════════════════════════════════════
 
 enum Mood {
@@ -24,16 +26,16 @@ enum Mood {
 
   String get emoji {
     switch (this) {
-      case Mood.happy: return '';
-      case Mood.calm: return '';
-      case Mood.nostalgic: return '';
-      case Mood.sad: return '';
-      case Mood.energetic: return '';
-      case Mood.anxious: return '';
-      case Mood.grateful: return '';
-      case Mood.neutral: return '';
-      case Mood.creative: return '';
-      case Mood.romantic: return '';
+      case Mood.happy: return '😊';
+      case Mood.calm: return '😌';
+      case Mood.nostalgic: return '🌅';
+      case Mood.sad: return '😢';
+      case Mood.energetic: return '⚡';
+      case Mood.anxious: return '😰';
+      case Mood.grateful: return '🙏';
+      case Mood.neutral: return '😐';
+      case Mood.creative: return '🎨';
+      case Mood.romantic: return '💖';
     }
   }
 }
@@ -75,8 +77,14 @@ class JournalEntry {
   final int durationMinutes;
   final bool isVoiceEntry;
   final List<EntrySection> sections;
+  final List<MemoryBlock> blocks;
+  final bool synced;
+  final String? thumbnailPath;
+  final double? latitude;
+  final double? longitude;
+  final String? locationLabel;
 
-  const JournalEntry({
+  JournalEntry({
     required this.id,
     required this.title,
     required this.content,
@@ -89,11 +97,157 @@ class JournalEntry {
     this.tags = const [],
     this.photoUrls = const [],
     this.durationMinutes = 0,
-    this.isVoiceEntry = true,
+    this.isVoiceEntry = false,
     this.sections = const [],
-  });
+    List<MemoryBlock>? blocks,
+    this.synced = false,
+    this.thumbnailPath,
+    this.latitude,
+    this.longitude,
+    this.locationLabel,
+  }) : this.blocks = blocks ?? _mapSectionsToBlocks(sections);
+
+  static List<MemoryBlock> _mapSectionsToBlocks(List<EntrySection> sections) {
+    return sections.map<MemoryBlock>((s) {
+      if (s.type == 'voice') {
+        return VoiceBlock(
+          id: s.blockId,
+          transcript: s.content,
+          audioPath: s.audioPath,
+          duration: s.durationSeconds != null ? Duration(seconds: s.durationSeconds!) : null,
+        );
+      } else if (s.type == 'reflection') {
+        return ReflectionBlock(
+          id: s.blockId,
+          content: s.content,
+        );
+      } else {
+        return TextBlock(
+          id: s.blockId,
+          text: s.content,
+        );
+      }
+    }).toList();
+  }
+
+  JournalEntry copyWith({
+    String? id,
+    String? title,
+    String? content,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Mood? mood,
+    String? location,
+    double? temperature,
+    String? weatherIcon,
+    List<String>? tags,
+    List<String>? photoUrls,
+    int? durationMinutes,
+    bool? isVoiceEntry,
+    List<EntrySection>? sections,
+    List<MemoryBlock>? blocks,
+    bool? synced,
+    String? thumbnailPath,
+    bool clearThumbnail = false,
+    bool clearLocation = false,
+    double? latitude,
+    double? longitude,
+    String? locationLabel,
+  }) {
+    List<EntrySection>? finalSections = sections;
+    List<MemoryBlock>? finalBlocks = blocks;
+
+    if (blocks != null && sections == null) {
+      finalSections = blocks.map((b) {
+        if (b is VoiceBlock) {
+          return EntrySection(
+            type: 'voice',
+            content: b.transcript,
+            audioPath: b.audioPath,
+            durationSeconds: b.duration?.inSeconds,
+            blockId: b.id,
+          );
+        } else if (b is ReflectionBlock) {
+          return EntrySection(
+            type: 'reflection',
+            content: b.content,
+            blockId: b.id,
+          );
+        } else if (b is TextBlock) {
+          return EntrySection(
+            type: 'paragraph',
+            content: b.text,
+            blockId: b.id,
+          );
+        } else {
+          return EntrySection(
+            type: 'paragraph',
+            content: '',
+            blockId: b.id,
+          );
+        }
+      }).toList();
+    } else if (sections != null && blocks == null) {
+      finalBlocks = _mapSectionsToBlocks(sections);
+    }
+
+    return JournalEntry(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      content: content ?? this.content,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      mood: mood ?? this.mood,
+      location: location ?? this.location,
+      temperature: temperature ?? this.temperature,
+      weatherIcon: weatherIcon ?? this.weatherIcon,
+      tags: tags ?? this.tags,
+      photoUrls: photoUrls ?? this.photoUrls,
+      durationMinutes: durationMinutes ?? this.durationMinutes,
+      isVoiceEntry: isVoiceEntry ?? this.isVoiceEntry,
+      sections: finalSections ?? this.sections,
+      blocks: finalBlocks ?? this.blocks,
+      synced: synced ?? this.synced,
+      thumbnailPath: clearThumbnail ? null : (thumbnailPath ?? this.thumbnailPath),
+      latitude: clearLocation ? null : (latitude ?? this.latitude),
+      longitude: clearLocation ? null : (longitude ?? this.longitude),
+      locationLabel: clearLocation ? null : (locationLabel ?? this.locationLabel),
+    );
+  }
 
   Map<String, dynamic> toMap() {
+    final List<EntrySection> finalSections = blocks.isNotEmpty
+        ? blocks.map((b) {
+            if (b is VoiceBlock) {
+              return EntrySection(
+                type: 'voice',
+                content: b.transcript,
+                audioPath: b.audioPath,
+                durationSeconds: b.duration?.inSeconds,
+                blockId: b.id,
+              );
+            } else if (b is ReflectionBlock) {
+              return EntrySection(
+                type: 'reflection',
+                content: b.content,
+                blockId: b.id,
+              );
+            } else if (b is TextBlock) {
+              return EntrySection(
+                type: 'paragraph',
+                content: b.text,
+                blockId: b.id,
+              );
+            } else {
+              return EntrySection(
+                type: 'paragraph',
+                content: '',
+                blockId: b.id,
+              );
+            }
+          }).toList()
+        : sections;
+
     return {
       'id': id,
       'title': title,
@@ -108,11 +262,20 @@ class JournalEntry {
       'photoUrls': jsonEncode(photoUrls),
       'durationMinutes': durationMinutes,
       'isVoiceEntry': isVoiceEntry ? 1 : 0,
-      'sections': jsonEncode(sections.map((s) => s.toMap()).toList()),
+      'sections': jsonEncode(finalSections.map((s) => s.toMap()).toList()),
+      'synced': synced ? 1 : 0,
+      'thumbnailPath': thumbnailPath,
+      'latitude': latitude,
+      'longitude': longitude,
+      'locationLabel': locationLabel,
     };
   }
 
   factory JournalEntry.fromMap(Map<String, dynamic> map) {
+    final sections = (jsonDecode(map['sections'] as String? ?? '[]') as List)
+        .map((s) => EntrySection.fromMap(s as Map<String, dynamic>))
+        .toList();
+
     return JournalEntry(
       id: map['id'] as String,
       title: map['title'] as String,
@@ -131,29 +294,41 @@ class JournalEntry {
           jsonDecode(map['photoUrls'] as String? ?? '[]')),
       durationMinutes: map['durationMinutes'] as int? ?? 0,
       isVoiceEntry: (map['isVoiceEntry'] as int? ?? 1) == 1,
-      sections: (jsonDecode(map['sections'] as String? ?? '[]') as List)
-          .map((s) => EntrySection.fromMap(s as Map<String, dynamic>))
-          .toList(),
+      sections: sections,
+      synced: (map['synced'] as int? ?? 0) == 1,
+      thumbnailPath: map['thumbnailPath'] as String?,
+      latitude: map['latitude'] != null ? (map['latitude'] as num).toDouble() : null,
+      longitude: map['longitude'] != null ? (map['longitude'] as num).toDouble() : null,
+      locationLabel: map['locationLabel'] as String?,
     );
   }
 }
 
 class EntrySection {
-  final String type; // 'heading', 'paragraph', 'quote', 'bullet', 'photo'
+  final String type; // 'heading', 'paragraph', 'quote', 'bullet', 'photo', 'voice'
   final String content;
   final int? headingLevel;
+  final String? audioPath;
+  final int? durationSeconds;
+  final String? blockId;
 
   const EntrySection({
     required this.type,
     required this.content,
     this.headingLevel,
+    this.audioPath,
+    this.durationSeconds,
+    this.blockId,
   });
 
   Map<String, dynamic> toMap() {
     return {
       'type': type,
       'content': content,
-      'headingLevel': headingLevel,
+      if (headingLevel != null) 'headingLevel': headingLevel,
+      if (audioPath != null) 'audioPath': audioPath,
+      if (durationSeconds != null) 'durationSeconds': durationSeconds,
+      if (blockId != null) 'blockId': blockId,
     };
   }
 
@@ -162,6 +337,9 @@ class EntrySection {
       type: map['type'] as String,
       content: map['content'] as String,
       headingLevel: map['headingLevel'] as int?,
+      audioPath: map['audioPath'] as String?,
+      durationSeconds: map['durationSeconds'] as int?,
+      blockId: map['blockId'] as String?,
     );
   }
 }

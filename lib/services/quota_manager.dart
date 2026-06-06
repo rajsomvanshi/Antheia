@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// FlowJournal — Quota Manager
+// Antheia — Quota Manager
 // ═══════════════════════════════════════════════════════════════
 // Tracks per-provider usage, enforces daily limits, manages
 // cooldowns so exhausted providers are skipped automatically.

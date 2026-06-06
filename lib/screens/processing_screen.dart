@@ -1,30 +1,43 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'dart:async';
-import 'dart:math';
+import '../state/memory_state.dart';
+import '../state/voice_state.dart';
+import '../state/preferences_state.dart';
 import '../theme/app_theme.dart';
-import '../state/app_state.dart';
-import 'editor_screen.dart';
+import '../models/models.dart';
+import 'editor_surface.dart';
+import 'new_home_shell.dart';
 
 // ═══════════════════════════════════════════════════════════════
-// Processing Screen — Real AI processing with fallback chain
-// FIX: Added `durationMinutes` constructor parameter (was missing,
-//      causing a crash when AuroraVoiceScreen passed it in).
+// ProcessingScreen — Voice entry post-processing
+//
+// P0 FIX: Added a 35-second wall-clock safety net around the
+// entire processVoiceEntry() call. Even if MemoryEnrichmentService
+// somehow hangs beyond its own 30s timeout (e.g. Dart Future
+// scheduler starvation), this screen will never be stuck longer
+// than 35s. The user's transcript is always preserved via the
+// fallback entry in processVoiceEntry().
 // ═══════════════════════════════════════════════════════════════
+
+/// Safety-net: if processVoiceEntry takes longer than this we
+/// navigate directly to the editor with the raw transcript.
+const _kProcessingWallTimeout = Duration(seconds: 35);
 
 class ProcessingScreen extends StatefulWidget {
-  final String? rawText;
-  // FIX: parameter was missing — AuroraVoiceScreen always passes this
+  final String rawText;
   final int durationMinutes;
   final double? latitude;
   final double? longitude;
+  final String? audioPath;
 
   const ProcessingScreen({
     super.key,
-    this.rawText,
-    this.durationMinutes = 1,
+    required this.rawText,
+    this.durationMinutes = 0,
     this.latitude,
     this.longitude,
+    this.audioPath,
   });
 
   @override
@@ -33,288 +46,250 @@ class ProcessingScreen extends StatefulWidget {
 
 class _ProcessingScreenState extends State<ProcessingScreen>
     with TickerProviderStateMixin {
-  // ─── Progress ───
-  late final AnimationController _progressController;
-  late final Animation<double> _progressAnimation;
+  late final AnimationController _atmosphere;
+  late final AnimationController _breatheController;
+  late final Animation<double> _dotScale;
+  late final Animation<double> _dotOpacity;
 
-  // ─── Sparkle Rotation ───
-  late final AnimationController _sparkleController;
-
-  // ─── Particle System ───
-  late final List<_FloatingParticle> _particles;
-  late final List<AnimationController> _particleControllers;
-
-  // ─── Processing Steps ───
-  static const List<String> _stepLabels = [
-    'Restructuring your story…',
-    'Detecting emotions…',
-    'Fetching weather…',
-    'Finding your location…',
-    'Designing your layout…',
-    'Finalizing…',
-  ];
-  int _currentStep = 0;
   bool _isDone = false;
-  String? _errorMessage;
+  String? _error;
 
-  final Random _random = Random();
+  // Safety-net timer — dismissed once _run() finishes naturally.
+  Timer? _wallClockTimer;
 
   @override
   void initState() {
     super.initState();
-    _initSparkle();
-    _initParticles();
 
-    _progressController = AnimationController(
+    // Slow drift atmospheric background
+    _atmosphere = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 1),
-    );
-    _progressAnimation = CurvedAnimation(
-      parent: _progressController,
-      curve: Curves.easeInOut,
-    );
+      duration: const Duration(milliseconds: 7200),
+    )..repeat(reverse: true);
 
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startRealProcessing();
-    });
-  }
-
-  void _initSparkle() {
-    _sparkleController = AnimationController(
+    // Dynamic Phase 2 breathing loop (2.5 seconds)
+    _breatheController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
-  }
+      duration: const Duration(milliseconds: 2500),
+    )..repeat(reverse: true);
 
-  void _initParticles() {
-    final count = 8 + _random.nextInt(3);
-    _particleControllers = [];
-    _particles = List.generate(count, (i) {
-      final controller = AnimationController(
-        vsync: this,
-        duration: Duration(milliseconds: 4000 + _random.nextInt(4000)),
-      )..repeat(reverse: true);
-      _particleControllers.add(controller);
+    _dotScale = Tween<double>(begin: 8.0, end: 32.0).animate(
+      CurvedAnimation(
+        parent: _breatheController,
+        curve: Curves.easeInOut,
+      ),
+    );
 
-      final isSecondary = _random.nextBool();
-      return _FloatingParticle(
-        startX: _random.nextDouble(),
-        startY: _random.nextDouble(),
-        endX: _random.nextDouble(),
-        endY: _random.nextDouble(),
-        size: 6.0 + _random.nextDouble() * 6.0,
-        color: (isSecondary ? AppColors.accentWarm : AppColors.accentPrimary)
-            .withValues(alpha: 0.2 + _random.nextDouble() * 0.2),
-        controller: controller,
-      );
+    _dotOpacity = Tween<double>(begin: 1.0, end: 0.15).animate(
+      CurvedAnimation(
+        parent: _breatheController,
+        curve: Curves.easeInOut,
+      ),
+    );
+
+    // ─── Safety-net: bail out after 35s regardless ────────────
+    // This fires if processVoiceEntry() hangs beyond its own
+    // internal timeout (should never happen, but defensive belt).
+    _wallClockTimer = Timer(_kProcessingWallTimeout, () {
+      debugPrint(
+          '[ProcessingScreen] WALL-CLOCK TIMEOUT: force-creating local entry.');
+      if (!mounted) return;
+      _navigateWithRawTranscript();
     });
+
+    _run();
   }
 
-  Future<void> _startRealProcessing() async {
-    final appState = Provider.of<AppState>(context, listen: false);
-    appState.addListener(_onAppStateChanged);
+  Future<void> _run() async {
+    final memoryState = context.read<MemoryState>();
+    final voiceState = context.read<VoiceState>();
+    final prefsState = context.read<PreferencesState>();
 
-    final rawText = widget.rawText ??
-        'Today was a beautiful day. I went for a walk in the park and '
-            'felt grateful for everything around me.';
-
-    final entry = await appState.processVoiceEntry(
-      rawText: rawText,
-      durationMinutes: widget.durationMinutes,
+    final entry = await memoryState.processVoiceEntry(
+      rawText: widget.rawText,
       latitude: widget.latitude,
       longitude: widget.longitude,
+      durationMinutes: widget.durationMinutes,
+      voiceState: voiceState,
+      tone: prefsState.reflectionTone,
+      formatting: prefsState.autoFormatting,
+      audioPath: widget.audioPath,
     );
 
-    if (!mounted) return;
-    appState.removeListener(_onAppStateChanged);
+    // If we got here, wall-clock timer is no longer needed.
+    _wallClockTimer?.cancel();
 
+    if (!mounted) return;
     if (entry != null) {
       setState(() => _isDone = true);
-      await Future.delayed(const Duration(milliseconds: 800));
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => const EditorScreen(),
-          ),
-        );
-      }
+      final delay = AnimationScale.of(context) == AnimationIntensity.stillness
+          ? Duration.zero
+          : const Duration(milliseconds: 900);
+      await Future.delayed(delay);
+      if (!mounted) return;
+      Navigator.of(context)
+          .pushReplacement(AppTransitions.fade(EditorSurface(initialEntry: entry)));
     } else {
-      setState(() {
-        _errorMessage = appState.processingError ?? 'Processing failed';
-      });
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) Navigator.pop(context, false);
+      // processVoiceEntry returned null (shouldn't happen post-fix,
+      // but handle gracefully).
+      _navigateWithRawTranscript();
     }
   }
 
-  void _onAppStateChanged() {
+  /// Fallback: build a minimal entry from the raw transcript and
+  /// open the editor immediately. User words are NEVER lost.
+  void _navigateWithRawTranscript() {
+    _wallClockTimer?.cancel();
     if (!mounted) return;
-    final appState = Provider.of<AppState>(context, listen: false);
-    final progress = appState.processingProgress;
-    final step = appState.processingStep;
 
-    _progressController.animateTo(
-      progress,
-      duration: const Duration(milliseconds: 400),
-      curve: Curves.easeOut,
+    final now = DateTime.now();
+    final fallbackEntry = JournalEntry(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      title: 'Voice Reflection',
+      content: widget.rawText,
+      createdAt: now,
+      updatedAt: now,
+      mood: Mood.neutral,
+      durationMinutes: widget.durationMinutes,
+      isVoiceEntry: true,
+      sections: [EntrySection(type: 'paragraph', content: widget.rawText)],
+      blocks: [
+        VoiceBlock(
+          transcript: widget.rawText,
+          duration: Duration(minutes: widget.durationMinutes),
+          audioPath: widget.audioPath,
+        )
+      ],
     );
 
-    // Map progress to step index
-    final stepIndex = (progress * (_stepLabels.length - 1)).round()
-        .clamp(0, _stepLabels.length - 1);
-    if (mounted) setState(() => _currentStep = stepIndex);
+    // Also persist it so it survives even if the editor is closed.
+    context.read<MemoryState>().addEntry(fallbackEntry);
+
+    Navigator.of(context).pushReplacement(
+      AppTransitions.fade(EditorSurface(initialEntry: fallbackEntry)),
+    );
   }
 
   @override
   void dispose() {
-    _progressController.dispose();
-    _sparkleController.dispose();
-    for (final c in _particleControllers) {
-      c.dispose();
-    }
+    _wallClockTimer?.cancel();
+    _atmosphere.dispose();
+    _breatheController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    final type = AppType.of(context);
+    final still = AnimationScale.of(context) == AnimationIntensity.stillness;
+
     return Scaffold(
-      backgroundColor: AppColors.bgPrimary,
-      body: Stack(
+      backgroundColor: colors.bg,
+      body: AnimatedBuilder(
+        animation: _atmosphere,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: _SettlingPainter(
+              colors: colors,
+              t: still ? 0.0 : _atmosphere.value,
+            ),
+            child: child,
+          );
+        },
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 34),
+            child: _error == null
+                ? _buildSettlingContent(colors)
+                : _buildError(type, colors),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettlingContent(ResolvedColors colors) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // ─── Floating particles ───
-          ..._particles.map((p) => AnimatedBuilder(
-                animation: p.controller,
-                builder: (context, _) {
-                  final t = p.controller.value;
-                  final x = p.startX + (p.endX - p.startX) * t;
-                  final y = p.startY + (p.endY - p.startY) * t;
-                  return Positioned(
-                    left: x * MediaQuery.of(context).size.width,
-                    top: y * MediaQuery.of(context).size.height,
-                    child: Container(
-                      width: p.size,
-                      height: p.size,
-                      decoration: BoxDecoration(
-                        color: p.color,
-                        shape: BoxShape.circle,
-                      ),
+          // Centered gold dot breathing dynamically
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: AnimatedBuilder(
+              animation: _breatheController,
+              builder: (context, child) {
+                return Center(
+                  child: Container(
+                    width: _dotScale.value,
+                    height: _dotScale.value,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: colors.accent.withValues(alpha: _dotOpacity.value),
                     ),
-                  );
-                },
-              )),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 28),
+          
+          // Coordinated breathing status text
+          AnimatedBuilder(
+            animation: _breatheController,
+            builder: (context, child) {
+              final textOpacity = 0.4 + (_dotOpacity.value * 0.55);
+              return Opacity(
+                opacity: textOpacity,
+                child: Text(
+                  _isDone ? 'Memory preserved.' : 'Connecting this reflection to your library...',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: 'Cormorant Garamond',
+                    fontSize: 18,
+                    fontStyle: FontStyle.italic,
+                    color: colors.accent,
+                    height: 1.5,
+                  ),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
 
-          SafeArea(
+  Widget _buildError(ResolvedType type, ResolvedColors colors) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Something interrupted.',
+            textAlign: TextAlign.center,
+            style: type.readingTitle.copyWith(
+              fontSize: 23,
+              color: colors.text,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            _error!,
+            textAlign: TextAlign.center,
+            style: type.bodySecondary.copyWith(height: 1.6),
+          ),
+          const SizedBox(height: 34),
+          InkWell(
+            onTap: () => Navigator.of(context)
+                .pushReplacement(AppTransitions.fade(const NewHomeShell())),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Spacer(flex: 2),
-
-                  // ─── Mascot / sparkle orb ───
-                  AnimatedBuilder(
-                    animation: _sparkleController,
-                    builder: (context, _) {
-                      return Container(
-                        width: 100,
-                        height: 100,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppColors.accentPrimary.withValues(alpha: 0.1),
-                          boxShadow: [
-                            BoxShadow(
-                              color: AppColors.accentPrimary
-                                  .withValues(alpha: 0.3),
-                              blurRadius: 24,
-                              spreadRadius: 4,
-                            ),
-                          ],
-                        ),
-                        child: ClipOval(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Image.asset(
-                              'assets/images/mascot.png',
-                              fit: BoxFit.contain,
-                              errorBuilder: (_, __, ___) => Icon(
-                                Icons.auto_awesome_rounded,
-                                size: 48,
-                                color: AppColors.accentPrimary,
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 32),
-
-                  // ─── Title ───
-                  Text(
-                    _isDone
-                        ? 'Entry Created! ✨'
-                        : _errorMessage != null
-                            ? 'Something went wrong'
-                            : 'Processing your journal…',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.textPrimary,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-
-                  const SizedBox(height: 12),
-
-                  // ─── Step label ───
-                  Text(
-                    _errorMessage ?? _stepLabels[_currentStep],
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: _errorMessage != null
-                          ? Colors.red
-                          : AppColors.textSecondary,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-
-                  const SizedBox(height: 40),
-
-                  // ─── Progress bar ───
-                  AnimatedBuilder(
-                    animation: _progressAnimation,
-                    builder: (context, _) {
-                      return Column(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(6),
-                            child: LinearProgressIndicator(
-                              value: _isDone ? 1.0 : _progressAnimation.value,
-                              minHeight: 8,
-                              backgroundColor: AppColors.bgSecondary,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                _isDone
-                                    ? AppColors.accentSuccess
-                                    : AppColors.accentPrimary,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            '${(_isDone ? 1.0 : _progressAnimation.value * 100).round()}%',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-
-                  const Spacer(flex: 2),
-                ],
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              child: Text(
+                'Return home',
+                style: type.body.copyWith(color: colors.textSecondary),
               ),
             ),
           ),
@@ -324,20 +299,43 @@ class _ProcessingScreenState extends State<ProcessingScreen>
   }
 }
 
-// ─── Particle data ───────────────────────────────────────────
+class _SettlingPainter extends CustomPainter {
+  final ResolvedColors colors;
+  final double t;
 
-class _FloatingParticle {
-  final double startX, startY, endX, endY, size;
-  final Color color;
-  final AnimationController controller;
+  const _SettlingPainter({required this.colors, required this.t});
 
-  const _FloatingParticle({
-    required this.startX,
-    required this.startY,
-    required this.endX,
-    required this.endY,
-    required this.size,
-    required this.color,
-    required this.controller,
-  });
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    canvas.drawRect(rect, Paint()..color = colors.bg);
+
+    final warm = Paint()
+      ..shader = RadialGradient(
+        center: Alignment(0.05, -0.34 + t * 0.04),
+        radius: 1.05,
+        colors: [
+          colors.accent.withValues(alpha: 0.035 + t * 0.018),
+          colors.accent.withValues(alpha: 0.010),
+          Colors.transparent,
+        ],
+        stops: const [0, 0.48, 1],
+      ).createShader(rect);
+    canvas.drawRect(rect, warm);
+
+    final shade = Paint()
+      ..shader = LinearGradient(
+        begin: Alignment.bottomCenter,
+        end: const Alignment(0, 0.2),
+        colors: [
+          Colors.black.withValues(alpha: 0.045 - t * 0.015),
+          Colors.transparent,
+        ],
+      ).createShader(rect);
+    canvas.drawRect(rect, shade);
+  }
+
+  @override
+  bool shouldRepaint(_SettlingPainter oldDelegate) =>
+      oldDelegate.t != t || oldDelegate.colors != colors;
 }

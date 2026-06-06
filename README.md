@@ -1,4 +1,4 @@
-# flowjournal
+# Antheia
 
 A new Flutter project.
 

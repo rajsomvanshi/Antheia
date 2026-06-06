@@ -1,767 +1,579 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import '../../theme/app_theme.dart';
-import '../../state/app_state.dart';
+
 import '../../models/models.dart';
+import '../../state/memory_state.dart';
+import '../../state/preferences_state.dart';
+import '../../state/memory_persistence_state.dart';
+import '../../theme/app_theme.dart';
+import '../../theme/interaction_system.dart';
+import '../editor_surface.dart';
+import '../memory_detail_screen.dart';
+import '../../services/paywall_service.dart';
+import '../../services/resurfacing_engine.dart';
+import '../paywall_sheet.dart';
+import '../../state/app_orchestrator.dart';
+import '../../services/outbox_service.dart';
+import '../../widgets/ambient_pulse_glow.dart';
 
-// ═══════════════════════════════════════════════════════════════
-// Overview Tab — Bento-Grid Stats Dashboard
-// ═══════════════════════════════════════════════════════════════
-
-class OverviewTab extends StatelessWidget {
+class OverviewTab extends StatefulWidget {
   const OverviewTab({super.key});
 
   @override
+  State<OverviewTab> createState() => _OverviewTabState();
+}
+
+class _OverviewTabState extends State<OverviewTab> {
+  late ScrollController _scrollController;
+  double _scrollOffset = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _scrollController.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (mounted) {
+      setState(() {
+        _scrollOffset = _scrollController.offset;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Consumer<AppState>(
-      builder: (context, appState, _) {
-        return SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Section Header ──────────────────────────────────
-              Text(
-                'Your Journey',
-                style: GoogleFonts.playfairDisplay(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 20),
-
-              // ── Bento Grid ──────────────────────────────────────
-              _BentoGrid(appState: appState),
-
-              const SizedBox(height: 28),
-
-              // ── On This Day ─────────────────────────────────────
-              _OnThisDaySection(appState: appState),
-
-              const SizedBox(height: 28),
-
-              // ── AI Insight of the Day ───────────────────────────
-              const _AiInsightCard(),
-
-              const SizedBox(height: 20),
-            ],
+    final memory = context.watch<MemoryState>();
+    final prefs = context.watch<PreferencesState>();
+    final persistState = context.watch<MemoryPersistenceState>();
+    
+    final colors = AppColors.of(context);
+    final type = AppType.of(context, fontOverride: prefs.selectedFont);
+    
+    if (memory.isLoading) {
+      return Scaffold(
+        backgroundColor: colors.bg,
+        body: const Center(
+          child: SizedBox(
+            width: 16, height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: Color(0xFF9B7A4A),
+            ),
           ),
-        );
-      },
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Bento Grid
-// ═══════════════════════════════════════════════════════════════
-
-class _BentoGrid extends StatelessWidget {
-  const _BentoGrid({required this.appState});
-
-  final AppState appState;
-
-  int _daysJournaled(AppState appState) {
-    final dates = appState.entries
-        .map((e) =>
-            DateTime(e.createdAt.year, e.createdAt.month, e.createdAt.day))
-        .toSet();
-    return dates.length;
-  }
-
-  int _totalMedia(AppState appState) {
-    return appState.entries.fold(0, (sum, e) => sum + e.photoUrls.length);
-  }
-
-  int _voiceNotes(AppState appState) {
-    return appState.entries.where((e) => e.isVoiceEntry).length;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Re-read from context so the widget rebuilds on every addEntry/updateEntry
-    final appState = context.watch<AppState>();
-
-    return Column(
-      children: [
-        // ── Row 1: Streak (full-width) ───────────────────────────
-        _StreakCard(streak: appState.currentStreak),
-        const SizedBox(height: 12),
-
-        // ── Row 2: Entries + Days ────────────────────────────────
-        Row(
-          children: [
-            Expanded(
-              child: _StatCard(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF00B4D8), Color(0xFF0077A8)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                emoji: '📖',
-                value: '${appState.entries.length}',
-                label: 'Total Entries',
-                height: 110,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _StatCard(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF00B894), Color(0xFF00876C)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                emoji: '📅',
-                value: '${_daysJournaled(appState)}',
-                label: 'Days Journaled',
-                height: 110,
-              ),
-            ),
-          ],
         ),
-        const SizedBox(height: 12),
+      );
+    }
 
-        // ── Row 3: Media + Voice + AI ────────────────────────────
-        Row(
+    final entries = memory.entries;
+    final now = DateTime.now();
+
+    // Active draft recovery hook
+    final activeDraft = persistState.activeDraft;
+
+    // Resurfaced memory fragment older than 7 days using the ResurfacingEngine
+    final candidateMemories = entries.where((e) => now.difference(e.createdAt).inDays >= 7).toList();
+    final resonantMemories = ResurfacingEngine.getResonantMemories(candidateMemories, limit: 1);
+    final fragment = resonantMemories.isNotEmpty ? resonantMemories.first : null;
+
+    // Last created entry
+    final lastEntry = entries.isNotEmpty ? entries.first : null;
+
+    // Progressive disclosure rules
+    final totalCount = entries.length;
+    final showOnlyToday = totalCount == 0;
+    final showTodayAndRecent = totalCount > 0 && totalCount <= 3;
+    final showAll = totalCount >= 4;
+
+    return Scaffold(
+      backgroundColor: colors.bg,
+      body: SafeArea(
+        child: Stack(
           children: [
-            Expanded(
-              child: _StatCard(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFFFD79A8), Color(0xFFD85A8A)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                emoji: '🖼️',
-                value: '${_totalMedia(appState)}',
-                label: 'Media',
-                height: 96,
-                smallMode: true,
+            // Atmospheric subtle paper grain overlay
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: CinematicGrain(seed: 2, animate: false),
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _StatCard(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFFE17055), Color(0xFFBC5A3E)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                emoji: '🎙️',
-                value: '${_voiceNotes(appState)}',
-                label: 'Voice Notes',
-                height: 96,
-                smallMode: true,
+            
+            // Ambient pulse glow behind the content
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: AmbientPulseGlow(),
               ),
             ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: _StatCard(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF6C5CE7), Color(0xFF5A4DD6)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                emoji: '✨',
-                value: '${appState.entries.length}',
-                label: 'AI Insights',
-                height: 96,
-                smallMode: true,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-
-        // ── Row 4: Mood Score (full-width) ───────────────────────
-        _MoodScoreCard(entries: appState.entries),
-      ],
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// Streak Card
-// ═══════════════════════════════════════════════════════════════
-
-class _StreakCard extends StatefulWidget {
-  const _StreakCard({required this.streak});
-
-  final int streak;
-
-  @override
-  State<_StreakCard> createState() => _StreakCardState();
-}
-
-class _StreakCardState extends State<_StreakCard> {
-  double _scale = 1.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _scale = 0.97),
-      onTapUp: (_) => setState(() => _scale = 1.0),
-      onTapCancel: () => setState(() => _scale = 1.0),
-      child: AnimatedScale(
-        scale: _scale,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOut,
-        child: IntrinsicHeight(
-          child: Container(
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF6C5CE7), Color(0xFF8B78E3)],
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-              ),
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF6C5CE7).withValues(alpha: 0.4),
-                  blurRadius: 20,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
+            
+            ListView(
+              controller: _scrollController,
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(28, 48, 28, 64),
               children: [
-                Expanded(
+                // Header (Day of week & Date)
+                Transform.translate(
+                  offset: Offset(0, _scrollOffset * 0.6),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        '🔥 Current Streak',
-                        style: GoogleFonts.inter(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                          color: Colors.white.withValues(alpha: 0.8),
+                        DateFormat('EEEE').format(now),
+                        style: type.displayLarge.copyWith(
+                          fontFamily: 'Cormorant Garamond',
+                          fontSize: 36,
+                          fontWeight: FontWeight.normal,
+                          color: colors.text,
                         ),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 4),
                       Text(
-                        widget.streak == 0
-                            ? 'Start journaling today!'
-                            : 'Keep going — ${widget.streak} day${widget.streak == 1 ? '' : 's'} strong!',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: Colors.white.withValues(alpha: 0.65),
+                        DateFormat('MMMM d').format(now).toUpperCase(),
+                        style: type.small.copyWith(
+                          color: colors.textSecondary,
+                          letterSpacing: 1.2,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 12),
-                Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '${widget.streak}',
-                      style: GoogleFonts.inter(
-                        fontSize: 32,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.white,
-                      ),
-                    ),
-                    Text(
-                      'days',
-                      style: GoogleFonts.inter(
-                        fontSize: 11,
-                        color: Colors.white.withValues(alpha: 0.75),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
+                const SizedBox(height: 12),
+                const QuietSyncIndicator(),
+                const SizedBox(height: 36),
 
-// ═══════════════════════════════════════════════════════════════
-// Generic Stat Card
-// ═══════════════════════════════════════════════════════════════
+                // ────────────────── SECTION 1: TODAY ──────────────────
+                _buildSectionHeader('TODAY', colors, type),
+                const SizedBox(height: 12),
+                _buildTodayTriggers(context, colors, type),
+                const SizedBox(height: 24),
+                Divider(color: colors.hairline, height: 0.5),
+                const SizedBox(height: 24),
 
-class _StatCard extends StatefulWidget {
-  const _StatCard({
-    required this.gradient,
-    required this.emoji,
-    required this.value,
-    required this.label,
-    required this.height,
-    this.smallMode = false,
-  });
-
-  final LinearGradient gradient;
-  final String emoji;
-  final String value;
-  final String label;
-  final double height;
-  final bool smallMode;
-
-  @override
-  State<_StatCard> createState() => _StatCardState();
-}
-
-class _StatCardState extends State<_StatCard> {
-  double _scale = 1.0;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _scale = 0.95),
-      onTapUp: (_) => setState(() => _scale = 1.0),
-      onTapCancel: () => setState(() => _scale = 1.0),
-      child: AnimatedScale(
-        scale: _scale,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOut,
-        child: Container(
-          constraints: BoxConstraints(minHeight: widget.height),
-          decoration: BoxDecoration(
-            gradient: widget.gradient,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                widget.emoji,
-                style: TextStyle(fontSize: widget.smallMode ? 22 : 28),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.value,
-                    style: GoogleFonts.inter(
-                      fontSize: widget.smallMode ? 26 : 32,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      letterSpacing: -0.5,
-                      height: 1.1,
-                    ),
+                // ───────────── SECTION 2: CONTINUE REFLECTION ─────────────
+                if (!showOnlyToday && activeDraft.isNotEmpty) ...[
+                  _buildSectionHeader('CONTINUE REFLECTION', colors, type),
+                  const SizedBox(height: 12),
+                  _buildDraftTrigger(
+                    context,
+                    persistState.getRecoveredEntry(),
+                    persistState.draftDisplayText,
+                    colors,
+                    type,
                   ),
-                  Text(
-                    widget.label,
-                    style: GoogleFonts.inter(
-                      fontSize: 12,
-                      color: Colors.white.withOpacity(0.85),
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  const SizedBox(height: 24),
+                  Divider(color: colors.hairline, height: 0.5),
+                  const SizedBox(height: 24),
                 ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
-// ═══════════════════════════════════════════════════════════════
-// Mood Score Card
-// ═══════════════════════════════════════════════════════════════
+                // ─────────────── SECTION 3: MEMORY FRAGMENT ───────────────
+                if (showAll && fragment != null) ...[
+                  _buildSectionHeader('MEMORY FRAGMENT', colors, type),
+                  const SizedBox(height: 12),
+                  _buildFragmentTrigger(context, fragment, colors, type),
+                  const SizedBox(height: 24),
+                  Divider(color: colors.hairline, height: 0.5),
+                  const SizedBox(height: 24),
+                ],
 
-class _MoodScoreCard extends StatefulWidget {
-  const _MoodScoreCard({required this.entries});
-
-  final List<JournalEntry> entries;
-
-  @override
-  State<_MoodScoreCard> createState() => _MoodScoreCardState();
-}
-
-class _MoodScoreCardState extends State<_MoodScoreCard> {
-  double _scale = 1.0;
-
-  Map<Mood, int> get _moodCounts {
-    final counts = <Mood, int>{};
-    for (final e in widget.entries) {
-      counts[e.mood] = (counts[e.mood] ?? 0) + 1;
-    }
-    return counts;
-  }
-
-  String _topMoodEmoji(Map<Mood, int> counts) {
-    if (counts.isEmpty) return '😐';
-    final topMood =
-        counts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
-    return topMood.emoji;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final counts = _moodCounts;
-    final total = widget.entries.length;
-
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _scale = 0.97),
-      onTapUp: (_) => setState(() => _scale = 1.0),
-      onTapCancel: () => setState(() => _scale = 1.0),
-      child: AnimatedScale(
-        scale: _scale,
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeOut,
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 88),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xFFF5F6FA), Color(0xFFECEFF4)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.08),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-          child: Row(
-            children: [
-              const Text('💗', style: TextStyle(fontSize: 24)),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'Mood Avg',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    if (total == 0)
-                      Text(
-                        'No entries yet',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: AppColors.textSecondary,
-                        ),
-                      )
-                    else
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: SizedBox(
-                          height: 10,
-                          child: Row(
-                            children: Mood.values
-                                .where((m) => counts.containsKey(m))
-                                .map((m) {
-                              return Flexible(
-                                flex: ((counts[m] ?? 0) * 100).round(),
-                                child: Tooltip(
-                                  message: '${m.emoji} ${m.label}',
-                                  child: Container(color: m.color),
-                                ),
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              if (total > 0) ...[
-                const SizedBox(width: 12),
-                Text(
-                  _topMoodEmoji(counts),
-                  style: const TextStyle(fontSize: 22),
-                ),
+                // ─────────────── SECTION 4: RECENT ENTRIES ───────────────
+                if ((showTodayAndRecent || showAll) && lastEntry != null) ...[
+                  _buildSectionHeader('RECENT ENTRIES', colors, type),
+                  const SizedBox(height: 12),
+                  _buildRecentTrigger(context, lastEntry, colors, type),
+                  const SizedBox(height: 24),
+                  Divider(color: colors.hairline, height: 0.5),
+                ],
               ],
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
-}
 
-// ═══════════════════════════════════════════════════════════════
-// On This Day Section
-// ═══════════════════════════════════════════════════════════════
-
-class _OnThisDaySection extends StatelessWidget {
-  const _OnThisDaySection({required this.appState});
-
-  final AppState appState;
-
-  List<JournalEntry> _getMemories() {
-    final now = DateTime.now();
-    return appState.entries.where((e) {
-      return e.createdAt.month == now.month &&
-          e.createdAt.day == now.day &&
-          e.createdAt.year != now.year;
-    }).toList();
+  Widget _buildSectionHeader(String title, ResolvedColors colors, ResolvedType type) {
+    return Text(
+      title,
+      style: type.label.copyWith(
+        color: colors.accent,
+        letterSpacing: 1.2,
+        fontWeight: FontWeight.bold,
+      ),
+    );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final memories = _getMemories();
-
+  Widget _buildTodayTriggers(BuildContext context, ResolvedColors colors, ResolvedType type) {
+    final hasEntries = context.watch<MemoryState>().entries.isNotEmpty;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'ON THIS DAY 🕰️',
-          style: GoogleFonts.inter(
-            fontSize: 12,
-            fontWeight: FontWeight.w700,
-            color: AppColors.textSecondary,
-            letterSpacing: 1.2,
-          ),
+        Row(
+          children: [
+            GestureDetector(
+              onTap: () async {
+                final paywall = context.read<PaywallService>();
+                final gate = paywall.checkGate(ProFeature.unlimitedEntries);
+                if (gate != null) {
+                  final unlocked = await PaywallSheet.show(context, gate);
+                  if (!unlocked) return;
+                }
+                AppHaptics.light();
+                if (context.mounted) {
+                  Navigator.push(
+                    context,
+                    AppTransitions.fade(const EditorSurface()),
+                  );
+                }
+              },
+              behavior: HitTestBehavior.opaque,
+              child: Text(
+                'Begin writing',
+                style: type.body.copyWith(
+                  color: colors.text,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text('·', style: TextStyle(color: colors.textSecondary)),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: () async {
+                final paywall = context.read<PaywallService>();
+                final gate = paywall.checkGate(ProFeature.unlimitedEntries);
+                if (gate != null) {
+                  final unlocked = await PaywallSheet.show(context, gate);
+                  if (!unlocked) return;
+                }
+                AppHaptics.light();
+                if (context.mounted) {
+                  // Navigate to Shell Voice tab directly via AppOrchestrator
+                  context.read<AppOrchestrator>().setNavIndex(2);
+                }
+              },
+              behavior: HitTestBehavior.opaque,
+              child: Text(
+                'Speak softly',
+                style: type.body.copyWith(
+                  color: colors.text,
+                  decoration: TextDecoration.underline,
+                ),
+              ),
+            ),
+          ],
         ),
-        const SizedBox(height: 12),
-        if (memories.isEmpty)
-          _buildEmptyMemoryCard()
-        else
-          ...memories.map((e) => _OnThisDayCard(entry: e)),
+        if (!hasEntries) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Describe the window you are looking through right now.',
+            style: type.bodySecondary.copyWith(
+              fontStyle: FontStyle.italic,
+              color: colors.textSecondary,
+              fontSize: 14,
+            ),
+          ),
+        ],
       ],
     );
   }
 
-  Widget _buildEmptyMemoryCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.06),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
+  Widget _buildDraftTrigger(
+    BuildContext context,
+    JournalEntry entry,
+    String displayText,
+    ResolvedColors colors,
+    ResolvedType type,
+  ) {
+    return GestureDetector(
+      onTap: () {
+        AppHaptics.subtle();
+        Navigator.push(
+          context,
+          AppTransitions.fade(
+            EditorSurface(initialEntry: entry),
           ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0xFFF0EEF9),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Center(
-              child: Text('📅', style: TextStyle(fontSize: 22)),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'No memories yet for today',
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Keep journaling to see your past entries here.',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _OnThisDayCard extends StatelessWidget {
-  const _OnThisDayCard({required this.entry});
-
-  final JournalEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    final yearsAgo = DateTime.now().year - entry.createdAt.year;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.08),
-            blurRadius: 12,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: entry.mood.color.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Center(
-              child: MoodIcon(mood: entry.mood, size: 22),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  entry.title,
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  '$yearsAgo year${yearsAgo == 1 ? '' : 's'} ago',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: AppColors.textSecondary,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Text(
-            entry.createdAt.year.toString(),
-            style: GoogleFonts.inter(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: AppColors.accentPrimary,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// AI Insight Card
-// ═══════════════════════════════════════════════════════════════
-
-class _AiInsightCard extends StatelessWidget {
-  const _AiInsightCard();
-
-  @override
-  Widget build(BuildContext context) {
-    final entries = context.watch<AppState>().entries;
-
-    // Show a personalised empty-state insight when there's no data yet
-    final insightText = entries.isEmpty
-        ? 'Write your first journal entry and I\'ll start building insights about your emotional patterns and habits.'
-        : 'You tend to feel most creative in the evenings. Consider journaling after sunset.';
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFFEDE8FB), Color(0xFFF3EFFE)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFF6C5CE7).withOpacity(0.2),
-          width: 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF6C5CE7).withOpacity(0.1),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Row(
+        );
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6C5CE7).withOpacity(0.15),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Center(
-              child: Text('✨', style: TextStyle(fontSize: 20)),
+          Text(
+            displayText.length > 90 ? '${displayText.substring(0, 90)}...' : displayText,
+            style: type.bodySecondary.copyWith(
+              fontSize: 14,
+              color: colors.textSecondary,
+              height: 1.5,
             ),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'AI INSIGHT OF THE DAY',
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.accentPrimary,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  insightText,
-                  style: GoogleFonts.merriweather(
-                    fontSize: 14,
-                    fontStyle: FontStyle.italic,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.textPrimary,
-                    height: 1.65,
-                  ),
-                ),
-              ],
+          const SizedBox(height: 8),
+          Text(
+            'Unfinished thought... (Draft)',
+            style: type.small.copyWith(
+              color: colors.textFaint,
+              fontSize: 10,
             ),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildFragmentTrigger(
+    BuildContext context,
+    JournalEntry entry,
+    ResolvedColors colors,
+    ResolvedType type,
+  ) {
+    final ageInDays = DateTime.now().difference(entry.createdAt).inDays;
+    final ageInYears = ageInDays ~/ 365;
+    final String timeStr;
+    if (ageInYears >= 1) {
+      timeStr = ageInYears == 1 ? 'One year ago today...' : '$ageInYears years ago today...';
+    } else if (ageInDays >= 30) {
+      final months = ageInDays ~/ 30;
+      timeStr = months == 1 ? 'One month ago...' : '$months months ago...';
+    } else {
+      timeStr = '$ageInDays days ago...';
+    }
+    
+    final prefs = context.watch<PreferencesState>();
+    final isPremium = prefs.isPremium;
+    final views = prefs.aiLinkViews;
+    final isGated = !isPremium && views >= 2;
+    
+    return GestureDetector(
+      onTap: () async {
+        AppHaptics.subtle();
+        if (isGated) {
+          await PaywallSheet.show(context, ProFeature.unlimitedEntries);
+        } else {
+          prefs.incrementAiLinkViews();
+          Navigator.push(
+            context,
+            AppTransitions.slideUp(MemoryDetailScreen(entry: entry)),
+          );
+        }
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  entry.title.isEmpty ? 'Untitled Memory' : entry.title,
+                  style: type.readingTitle.copyWith(
+                    fontSize: 20,
+                    color: colors.text,
+                  ),
+                ),
+              ),
+              if (isGated) ...[
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.lock_outline_rounded,
+                  size: 16,
+                  color: colors.accent,
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isGated
+                ? 'Unlock full memory intelligence with Pro'
+                : timeStr,
+            style: type.small.copyWith(
+              color: isGated ? colors.error : colors.accent.withValues(alpha: 0.8),
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentTrigger(
+    BuildContext context,
+    JournalEntry entry,
+    ResolvedColors colors,
+    ResolvedType type,
+  ) {
+    final relativeDate = _timeAgo(entry.createdAt);
+    return GestureDetector(
+      onTap: () {
+        AppHaptics.subtle();
+        Navigator.push(
+          context,
+          AppTransitions.slideUp(MemoryDetailScreen(entry: entry)),
+        );
+      },
+      behavior: HitTestBehavior.opaque,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            entry.title.isEmpty ? 'Untitled Memory' : entry.title,
+            style: type.body.copyWith(
+              fontWeight: FontWeight.w500,
+              color: colors.text,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Last journal entry... ($relativeDate)',
+            style: type.small.copyWith(
+              color: colors.textFaint,
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _timeAgo(DateTime date) {
+    final now = DateTime.now();
+    final diff = now.difference(date);
+    if (diff.inDays == 0) return 'today';
+    if (diff.inDays == 1) return 'yesterday';
+    if (diff.inDays < 7) return '${diff.inDays} days ago';
+    return DateFormat('MMM d').format(date);
+  }
+}
+
+class QuietSyncIndicator extends StatelessWidget {
+  const QuietSyncIndicator({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = AppColors.of(context);
+    final type = AppType.of(context);
+    final outbox = OutboxService();
+
+    return ValueListenableBuilder<bool>(
+      valueListenable: outbox.isSyncLimitReachedNotifier,
+      builder: (context, limitReached, _) {
+        return ValueListenableBuilder<int>(
+          valueListenable: outbox.permanentlyFailedCountNotifier,
+          builder: (context, failedCount, _) {
+            return ValueListenableBuilder<int>(
+              valueListenable: outbox.pendingCountNotifier,
+              builder: (context, pendingCount, _) {
+                if (limitReached) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: colors.error.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: colors.error.withValues(alpha: 0.3), width: 0.5),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.cloud_off_rounded, size: 16, color: colors.error),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Your memories are no longer being backed up. Upgrade to continue.',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 12,
+                              color: colors.textSecondary,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                if (failedCount > 0) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: colors.error.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: colors.error.withValues(alpha: 0.25), width: 0.5),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, size: 16, color: colors.error),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'Backup failed — $failedCount entries need attention',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 12,
+                              color: colors.textSecondary,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        GestureDetector(
+                          onTap: () {
+                            AppHaptics.light();
+                            outbox.retryFailed();
+                          },
+                          child: Text(
+                            'Retry',
+                            style: TextStyle(
+                              fontFamily: 'Inter',
+                              fontSize: 12,
+                              color: colors.accent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                if (pendingCount > 0) {
+                  return Row(
+                    children: [
+                      SizedBox(
+                        width: 10,
+                        height: 10,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: colors.accent,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Syncing… ($pendingCount pending)',
+                        style: TextStyle(
+                          fontFamily: 'Inter',
+                          fontSize: 11,
+                          color: colors.textFaint,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  );
+                }
+
+                return const SizedBox.shrink();
+              },
+            );
+          },
+        );
+      },
     );
   }
 }

@@ -1,11 +1,18 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 import '../../theme/app_theme.dart';
-import '../../state/app_state.dart';
+import '../../theme/interaction_system.dart';
+import '../../state/memory_state.dart';
+import '../../models/models.dart';
+import '../memory_detail_screen.dart';
 
 // ═══════════════════════════════════════════════════════════════
-// MediaTab — Photo memories grid from journal entries
+// Media Sub-View — Archival Cinema Gallery
+//
+// Shows both network photos and local cover thumbnails.
+// Tapping a media item takes the user directly to the entry.
 // ═══════════════════════════════════════════════════════════════
 
 class MediaTab extends StatelessWidget {
@@ -13,97 +20,129 @@ class MediaTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = context.watch<AppState>().entries;
+    final entries = context.watch<MemoryState>().entries;
+    final colors = AppColors.of(context);
 
-    // Collect all photo URLs across all entries
-    final photos = <String>[];
-    for (final e in entries) {
-      if (e.photoUrls.isNotEmpty) {
-        photos.addAll(e.photoUrls);
+    // Collect all photo urls and thumbnail paths
+    final List<_PhotoItem> photos = [];
+    for (final entry in entries) {
+      if (entry.thumbnailPath != null && entry.thumbnailPath!.trim().isNotEmpty) {
+        photos.add(_PhotoItem(pathOrUrl: entry.thumbnailPath!, entry: entry));
+      }
+      for (final url in entry.photoUrls) {
+        if (url.trim().isNotEmpty) {
+          photos.add(_PhotoItem(pathOrUrl: url, entry: entry));
+        }
       }
     }
 
     if (photos.isEmpty) {
       return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(40),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  color: AppColors.bgSecondary,
-                  borderRadius: BorderRadius.circular(AppRadius.card),
-                ),
-                child: Icon(
-                  Icons.photo_library_outlined,
-                  size: 48,
-                  color: AppColors.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'No photos yet',
-                style: GoogleFonts.inter(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Add photos to your journal entries\nto see them here',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  color: AppColors.textSecondary,
-                  height: 1.5,
-                ),
-              ),
-            ],
-          ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.photo_outlined, size: 32, color: colors.textTertiary),
+            const SizedBox(height: 16),
+            Text(
+              'Your visual archive\nwill grow here.',
+              textAlign: TextAlign.center,
+              style: AppType.of(context).bodySecondary,
+            ),
+          ],
         ),
       );
     }
 
-    return Padding(
-      padding: const EdgeInsets.all(12),
-      child: GridView.builder(
-        physics: const BouncingScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
-          crossAxisSpacing: 4,
-          mainAxisSpacing: 4,
-        ),
-        itemCount: photos.length,
-        itemBuilder: (context, index) {
-          final url = photos[index];
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: url.startsWith('http')
-                ? Image.network(
-                    url,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, _) => Container(
-                      color: AppColors.bgSecondary,
-                      child: Icon(
-                        Icons.broken_image_outlined,
-                        color: AppColors.textSecondary,
+    return GridView.builder(
+      physics: const BouncingScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 120),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 8,
+        crossAxisSpacing: 8,
+        childAspectRatio: 0.85,
+      ),
+      itemCount: photos.length,
+      itemBuilder: (context, index) {
+        final photo = photos[index];
+        final isNetwork = photo.pathOrUrl.startsWith('http://') || photo.pathOrUrl.startsWith('https://');
+
+        Widget imageWidget;
+        if (isNetwork) {
+          imageWidget = Image.network(
+            photo.pathOrUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              color: colors.surface,
+              child: Icon(Icons.broken_image_outlined, color: colors.textTertiary),
+            ),
+          );
+        } else {
+          final file = File(photo.pathOrUrl);
+          if (file.existsSync()) {
+            imageWidget = Image.file(
+              file,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => Container(
+                color: colors.surface,
+                child: Icon(Icons.broken_image_outlined, color: colors.textTertiary),
+              ),
+            );
+          } else {
+            imageWidget = Container(
+              color: colors.surface,
+              child: Icon(Icons.broken_image_outlined, color: colors.textTertiary),
+            );
+          }
+        }
+
+        return GestureDetector(
+          onTap: () {
+            AppHaptics.subtle();
+            Navigator.push(
+              context,
+              AppTransitions.slideUp(MemoryDetailScreen(entry: photo.entry)),
+            );
+          },
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                imageWidget,
+                // Bottom gradient
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    height: 60,
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Color(0xBB000000)],
                       ),
                     ),
-                  )
-                : Container(
-                    color: AppColors.bgSecondary,
-                    child: Icon(
-                      Icons.image_outlined,
-                      color: AppColors.textSecondary,
+                    padding: const EdgeInsets.all(8),
+                    alignment: Alignment.bottomLeft,
+                    child: Text(
+                      DateFormat('MMM d').format(photo.entry.createdAt),
+                      style: AppType.of(context).small.copyWith(color: Colors.white),
                     ),
                   ),
-          );
-        },
-      ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
+}
+
+class _PhotoItem {
+  final String pathOrUrl;
+  final JournalEntry entry;
+  const _PhotoItem({required this.pathOrUrl, required this.entry});
 }
